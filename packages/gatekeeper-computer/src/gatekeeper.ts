@@ -416,6 +416,7 @@ export class ComputerAccount extends WorkerEntrypoint<Cloudflare.Env, AccountPro
   async ensureResources(_patterns: string[]): Promise<{ url?: string }> { return {}; }
   async revoke(): Promise<void> { await this.env.ACCOUNTS.get(this.env.ACCOUNTS.idFromString(this.ctx.props.accountId)).revoke(); }
   async reconnect(): Promise<{ url: string }> { throw new Error("Create a new Computer connection."); }
+  commitReconnect(_stageId: string): never { throw new Error("Computer connections have no credentials to reconnect."); }
   async getAuthenticatedEmail(): Promise<null> { return null; }
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> { return this.ctx.exports.ComputerVerifier({}); }
