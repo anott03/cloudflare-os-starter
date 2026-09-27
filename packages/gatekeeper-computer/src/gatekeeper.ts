@@ -1,7 +1,7 @@
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import type {
-  AccountDescription, ActionDescription, ActionKind, AppUiContext, GatekeeperUiFrame, ApprovalQueue, Gatekeeper, GatekeeperConnectCallback,
+  AccountDescription, ActionDescription, ActionField, ActionKind, AppUiContext, GatekeeperUiFrame, ApprovalQueue, Gatekeeper, GatekeeperConnectCallback,
   GatekeeperConnectOptions, GatekeeperUser, GatekeeperUserVerifier, GitCache, GitPullHints,
   ResourceConfiguratorFrame, ResourceDescription, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -122,11 +122,14 @@ export class ComputerGatekeeper extends DurableObject<Cloudflare.Env, AccountPro
         this.ctx.storage.kv.put(`pendingCheckout:${id}`, true);
         await this.#packs.put(`input:${id}`, source.pack);
       }
+      const details = this.#description(operation);
       const description: ActionDescription = {
         title: `Computer: ${operation.kind} in ${sandbox.name}`,
-        description: this.#description(operation),
+        description: details.description,
         implementsRevert: false, awaitDecision: true,
       };
+      if (details.fields.length > 0) description.fields = details.fields;
+      if (details.complete) description.descriptionIsComplete = true;
       if (operation.kind === "exec" || operation.kind === "screenshot") {
         description.actionKind = EXEC_ACTION;
         description.autoApprovable = true;
@@ -142,21 +145,52 @@ export class ComputerGatekeeper extends DurableObject<Cloudflare.Env, AccountPro
     return action;
   }
 
-  #description(operation: Operation): string {
+  #description(operation: Operation): { description: string; fields: ActionField[]; complete: boolean } {
     switch (operation.kind) {
-      case "create": return "Start a billable Linux container with persistent workspace files.";
-      case "exec": return `Queue this shell command in ${operation.cwd}, with a ${operation.timeoutMs} ms execution timeout:\n\n` +
-        `\`\`\`sh\n${operation.command}\n\`\`\`\n\nThe command can change all sandbox files and use the configured network policy.`;
-      case "screenshot": return `Open ${operation.options.url} in a fresh local Chromium session and capture a PNG. ` +
-        `Viewport: ${operation.options.viewport.width} × ${operation.options.viewport.height}. ` +
-        `Capture: ${operation.options.selector ?? (operation.options.fullPage ? "full page" : "viewport")}. ` +
-        `Wait for: ${operation.options.waitForSelector ?? "page load"}. Timeout: ${operation.options.timeoutMs} ms. ` +
-        "Page scripts run and may change local app data. Images remain private to this connection until read into the workspace.";
-      case "write": return `Replace ${operation.path} with:\n\n\`\`\`\n${operation.content}\n\`\`\``;
-      case "checkout": return `Import Git commit ${operation.commitId} into ${operation.directory}. No GitHub credentials are transferred.`;
-      case "stop": return "Cancel running and queued approved jobs and stop all sandbox processes. Only synchronized workspace files are retained.";
-      case "destroy": return "Cancel running and queued approved jobs, stop the sandbox, and permanently remove workspace files. Exported Git history is retained for pending pushes.";
-      case "cancel": return `Cancel job ${operation.jobId}. Cancelling a waiting job leaves the running job alone. Cancelling a running job stops sandbox processes; other queued jobs resume afterward. Earlier effects cannot be undone.`;
+      case "create": return { description: "Start a billable Linux container with persistent workspace files.", fields: [], complete: true };
+      case "exec": return {
+        description: "Queue a shell command. It can change all sandbox files and use the configured network policy.",
+        fields: [
+          { label: "Command", kind: "text", value: operation.command },
+          { label: "Working directory", kind: "inline", value: operation.cwd },
+          { label: "Timeout", kind: "inline", value: `${operation.timeoutMs} ms` },
+        ],
+        complete: true,
+      };
+      case "screenshot": return {
+        description: "Open a local app in a fresh Chromium session and capture a PNG. Page scripts run and may change local app data. Images remain private to this connection until read into the workspace.",
+        fields: [
+          { label: "URL", kind: "inline", value: operation.options.url },
+          { label: "Viewport", kind: "inline", value: `${operation.options.viewport.width} × ${operation.options.viewport.height}` },
+          { label: "Capture", kind: "inline", value: operation.options.selector ?? (operation.options.fullPage ? "Full page" : "Viewport") },
+          { label: "Wait for", kind: "inline", value: operation.options.waitForSelector ?? "Page load" },
+          { label: "Timeout", kind: "inline", value: `${operation.options.timeoutMs} ms` },
+        ],
+        complete: true,
+      };
+      case "write": return {
+        description: "Replace a sandbox file.",
+        fields: [
+          { label: "Path", kind: "inline", value: operation.path },
+          { label: "Content", kind: "text", value: operation.content },
+        ],
+        complete: true,
+      };
+      case "checkout": return {
+        description: "Import a Git commit exported by the GitHub connection. No GitHub credentials are transferred.",
+        fields: [
+          { label: "Commit", kind: "inline", value: operation.commitId },
+          { label: "Directory", kind: "inline", value: operation.directory },
+        ],
+        complete: false,
+      };
+      case "stop": return { description: "Cancel running and queued approved jobs and stop all sandbox processes. Only synchronized workspace files are retained.", fields: [], complete: true };
+      case "destroy": return { description: "Cancel running and queued approved jobs, stop the sandbox, and permanently remove workspace files. Exported Git history is retained for pending pushes.", fields: [], complete: true };
+      case "cancel": return {
+        description: "Cancel a job. Cancelling a waiting job leaves the running job alone. Cancelling a running job stops sandbox processes; other queued jobs resume afterward. Earlier effects cannot be undone.",
+        fields: [{ label: "Job", kind: "inline", value: operation.jobId }],
+        complete: true,
+      };
     }
   }
 
