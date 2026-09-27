@@ -1,6 +1,9 @@
 packages:
   - cloudflare-os/packages/workshop-shared
   - cloudflare-os/packages/error-reporting
+  # Upstream turned its shared build tooling into the @gadgets/scripts package
+  # (cloudflare-os/scripts), which error-reporting now depends on via `workspace:*`.
+  - cloudflare-os/scripts
   - packages/*
 
 # Mirror of cloudflare-os/pnpm-workspace.yaml's catalog. Required, not merely tidy: the two
@@ -15,10 +18,13 @@ packages:
 # split installs in CI and on a fresh checkout do not. See
 # cloudflare-os/docs/integration-testing.md.
 catalog:
-  '@cloudflare/vitest-pool-workers': ^0.20.2
-  capnweb: ^0.11.1
+  '@cloudflare/vitest-pool-workers': ^0.22.0
+  capnweb: ^0.12.0
+  # jsdiff: line diffs in workshop-backend (formatUnifiedDiff) and gatekeeper-github (the
+  # simulated PR diff's hunks). Mirrored from the submodule's catalog.
+  diff: ^8.0.4
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
-  capnweb-validate: 0.2.4
+  capnweb-validate: 0.3.0
   # Exact: TypeScript 7 (tsgo). The submodule's tsconfig sets `singleThreaded`, which TS 5.9
   # rejects outright, so every package extending it has to be on 7.x. Nothing here uses the JS
   # compiler API, so the submodule's `typescript6` alias is not needed.
@@ -28,7 +34,7 @@ catalog:
   vite: 7.3.6
   vite-plus: ^0.2.8
   vitest: ^4.1.10
-  wrangler: ^4.119.0
+  wrangler: ^4.125.0
 
 overrides:
   # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the
@@ -38,6 +44,9 @@ overrides:
   # Arrives as an optional vite/vitest peer resolved to `latest`; pinned to the same release the
   # submodule pins so the two installs agree.
   '@types/node': 26.1.0
+  # Deep transitive of @codemirror/lang-markdown; pinned to the last mature release, matching
+  # the submodule (its minimumReleaseAge gate doesn't cover transitive peers).
+  '@lezer/markdown': 1.6.4
 
 allowBuilds:
   '@google/genai': true

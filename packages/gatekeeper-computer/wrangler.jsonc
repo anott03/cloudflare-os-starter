@@ -1,0 +1,42 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "gatekeeper-computer",
+  "main": ".wrangler/validate/src/index.ts",
+  "build": {
+    "command": "pnpm run build:worker",
+    "watch_dir": "src"
+  },
+  "compatibility_date": "2026-08-04",
+  "compatibility_flags": ["nodejs_compat", "allow_irrevocable_stub_storage"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "containers": [{
+    "class_name": "ComputerSandbox",
+    "image": "./Dockerfile",
+    "instance_type": "standard-2",
+    "max_instances": 10
+  }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "SANDBOXES", "class_name": "ComputerSandbox" },
+      { "name": "ACCOUNTS", "class_name": "ComputerAccountState" }
+    ]
+  },
+  "migrations": [{
+    "tag": "v1",
+    "new_sqlite_classes": ["ComputerSandbox", "ComputerAccountState", "ComputerGatekeeper"]
+  }],
+  "vars": {
+    "COMPUTER_ENABLED": true,
+    "EGRESS_HOSTS": "registry.npmjs.org",
+    "MAX_SANDBOXES": 10,
+    "MAX_COMMAND_MS": 300000,
+    "IDLE_TIMEOUT_MS": 600000
+  },
+  "rules": [{ "type": "Text", "globs": ["**/*.txt"], "fallthrough": true }],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false }
+  }
+}

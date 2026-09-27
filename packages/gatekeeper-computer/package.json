@@ -1,0 +1,26 @@
+{
+  "name": "gatekeeper-computer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build-manager.ts && tsc --noEmit && tsc --project tsconfig.browser.json && tsc --project tsconfig.manager.json",
+    "build:manager": "node build-manager.ts",
+    "types:generate": "node generate-types.ts",
+    "build:worker": "node build-manager.ts && capnweb-validate build --out .wrangler/validate"
+  },
+  "dependencies": {
+    "@cloudflare/computer": "0.3.1",
+    "@gadgets/workshop-shared": "workspace:*",
+    "capnweb": "catalog:",
+    "capnweb-validate": "catalog:",
+    "isomorphic-git": "1.40.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.0",
+    "esbuild": "0.28.1",
+    "playwright": "1.63.0",
+    "typescript": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

@@ -1,0 +1,4 @@
+*
+!Dockerfile
+!browser/
+!browser/screenshot.ts

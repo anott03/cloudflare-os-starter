@@ -1,0 +1,44 @@
+:root {
+  color-scheme: light dark;
+  --bg: light-dark(#ffffff, #141416);
+  --text: light-dark(#1d1d20, #ececef);
+  --subtle: light-dark(#5f5f69, #a3a3ad);
+  --line: light-dark(#e3e3e8, #2c2c31);
+  --tint: light-dark(#f4f4f6, #1f1f23);
+  --live: light-dark(#e7f5ec, #173222);
+  --live-text: light-dark(#1d6b3b, #7fd6a0);
+  --danger: light-dark(#c0322b, #ff8a82);
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+:root[data-mode="light"] { color-scheme: light; }
+:root[data-mode="dark"] { color-scheme: dark; }
+body { margin: 0; background: var(--bg); color: var(--text); font-size: 14px; line-height: 20px; }
+#root { max-width: 880px; margin: 0 auto; padding: 24px 20px 40px; }
+h1 { margin: 0; font-size: 20px; line-height: 28px; font-weight: 600; }
+h2 { margin: 0; font-size: 14px; font-weight: 500; }
+p { margin: 0; }
+.header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.intro { display: grid; gap: 4px; }
+.subtle, .meta { color: var(--subtle); }
+.mono { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.9em; }
+.list, .history { list-style: none; margin: 16px 0 0; padding: 0; }
+.list { border: 1px solid var(--line); border-radius: 12px; }
+.row { display: flex; justify-content: space-between; gap: 16px; padding: 12px 16px; border-top: 1px solid var(--line); }
+.row:first-child { border-top: 0; }
+.details { display: grid; gap: 2px; min-width: 0; }
+.name { overflow-wrap: anywhere; }
+.status { margin-top: 4px; color: var(--subtle); }
+.badge { display: inline-block; padding: 0 8px; border-radius: 999px; background: var(--tint); color: var(--subtle); }
+.badge.live { background: var(--live); color: var(--live-text); }
+.actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.warning { color: var(--subtle); max-width: 240px; }
+button { font: inherit; font-size: 14px; border-radius: 8px; padding: 4px 10px; cursor: pointer; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+button:hover:not(:disabled) { background: var(--tint); }
+button:disabled { cursor: not-allowed; opacity: 0.45; }
+button.danger { background: var(--danger); border-color: var(--danger); color: #ffffff; }
+button.danger:hover:not(:disabled) { background: var(--danger); }
+.danger-text { color: var(--danger); }
+.error { margin-top: 8px; color: var(--danger); }
+.empty { margin-top: 16px; padding: 24px; border: 1px dashed var(--line); border-radius: 12px; color: var(--subtle); text-align: center; }
+.section { margin-top: 28px; }
+.history li { padding: 6px 0; border-top: 1px solid var(--line); color: var(--subtle); overflow-wrap: anywhere; }
