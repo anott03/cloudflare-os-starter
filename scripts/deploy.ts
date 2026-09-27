@@ -222,6 +222,7 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   if (!workerNames.every((name) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))) {
     throw new Error("Worker names must use lowercase letters, numbers, and hyphens.");
   }
+  validateExtraGatekeepers(config);
 
   const route = config.workers.router.route;
   if (!route || Boolean(route.workersDev) === Boolean(route.customDomain)) {
@@ -357,6 +358,48 @@ export function aiGatewayPlan(config: DeploymentConfig): AiGatewayPlan | null {
 }
 
 /**
+ * Checks extra gatekeeper bindings (`ExtraGatekeeper` in deployment-config.ts): the Router serves the binding name's suffix as a public URL
+ * path, so the name is reserved-shape, and the Workshop rides the same vendor-RPC shape as its own
+ * Gatekeepers -- which means an extra binding must never collide with one this deployment binds
+ * itself, or a deploy would fail on the duplicate binding name instead of here.
+ */
+function validateExtraGatekeepers(config: DeploymentConfig): void {
+  const pattern = /^GATEKEEPER_[A-Z0-9_]+$/;
+  // Bound by generateConfigs from the deployment's own Workers; EMAIL is the Router's special-cased
+  // Email Routing shape.
+  const reserved = ["GATEKEEPER_CONTEXT", "GATEKEEPER_SCHEDULER", "GATEKEEPER_CUSTOM", "GATEKEEPER_EMAIL"];
+  const ownedNames = Object.values(config.workers)
+    .filter(Boolean)
+    .map((worker) => worker!.name);
+  const seen = new Set<string>();
+  for (const extra of config.extraGatekeepers ?? []) {
+    if (!pattern.test(extra.binding)) {
+      throw new Error(
+        `Extra Gatekeeper binding "${extra.binding}" must match ${pattern}. Its uppercase suffix ` +
+        "becomes the /gatekeeper/<suffix> URL path, lowercased with underscores as hyphens.");
+    }
+    if (reserved.includes(extra.binding)) {
+      throw new Error(
+        `Extra Gatekeeper binding "${extra.binding}" is reserved: this script binds it to one of ` +
+        "the deployment's own Gatekeeper Workers.");
+    }
+    if (seen.has(extra.binding)) {
+      throw new Error(`Extra Gatekeeper binding "${extra.binding}" is listed twice.`);
+    }
+    seen.add(extra.binding);
+    if (typeof extra.service !== "string" || !extra.service.trim()) {
+      throw new Error(`Extra Gatekeeper "${extra.binding}" must name the Worker it points at.`);
+    }
+    if (ownedNames.includes(extra.service)) {
+      throw new Error(
+        `Extra Gatekeeper "${extra.binding}" names Worker "${extra.service}", which this ` +
+        "deployment owns and deploys itself. Gatekeepers outside the deployment need their own " +
+        "deployed name.");
+    }
+  }
+}
+
+/**
  * The deploy-time half of `AiGatewayConfig`'s constructor checks
  * (cloudflare-os/packages/workshop-backend/src/ai-gateway.ts), mirroring `resolveAiGateway()` in
  * cloudflare-os/scripts/preview/staging-config.ts. A configuration the backend would reject belongs
@@ -448,6 +491,9 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     { binding: "GATEKEEPER_CONTEXT", service: config.workers.context.name },
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
     { binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper.name },
+    // Hand-deployed Gatekeepers: plain HTTP bindings. The Router discovers them by scanning
+    // GATEKEEPER_* names and serves each at /gatekeeper/<suffix>.
+    ...(config.extraGatekeepers ?? []).map(({ binding, service }) => ({ binding, service })),
   ];
 
   setCommon(workshop, config, config.workers.workshop.name);
@@ -513,6 +559,12 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       service: config.workers.customGatekeeper.name,
       entrypoint: "GatekeeperVendor",
     },
+    // Hand-deployed Gatekeepers ride the same vendor-RPC shape as the built-in ones.
+    ...(config.extraGatekeepers ?? []).map(({ binding, service }) => ({
+      binding,
+      service,
+      entrypoint: "GatekeeperVendor",
+    })),
   ];
   workshop.kv_namespaces = [
     { binding: "BLUEPRINTS", ...(config.resources.blueprintsKvNamespaceId

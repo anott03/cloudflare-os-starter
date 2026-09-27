@@ -80,6 +80,23 @@ export interface ContextConfig {
   artifacts?: { enabled?: boolean; namespace?: string };
 }
 
+/**
+ * A Gatekeeper this deployment owns that is *not* one of the Workers above: typically one built
+ * and deployed by hand from a `cloudflare-os/packages/gatekeeper-*` directory.
+ *
+ * Each entry gains two service bindings: a vendor-RPC binding into the Workshop (entrypoint
+ * `GatekeeperVendor`, the shape every Gatekeeper Worker exposes) and a plain HTTP binding into the
+ * Router. The Router discovers Gatekeepers by scanning `GATEKEEPER_*` binding names and serves
+ * each at `/gatekeeper/<suffix>` -- the binding name's suffix, lowercased, underscores as hyphens
+ * (cloudflare-os/packages/router/src/index.ts).
+ */
+export interface ExtraGatekeeper {
+  /** The binding name. Must start with `GATEKEEPER_`; the suffix picks the public URL path. */
+  binding: string;
+  /** The Gatekeeper Worker's deployed name. */
+  service: string;
+}
+
 /** Worker telemetry. Maps onto wrangler's `observability` block. */
 export interface DeploymentObservabilityConfig {
   enabled: boolean;
@@ -120,6 +137,8 @@ export interface DeploymentConfig {
   context: ContextConfig;
   /** Display text the example custom Gatekeeper serves to agents. */
   customGatekeeper: { name: string; message: string };
+  /** Gatekeepers deployed outside this script but bound into the deployment. Optional. */
+  extraGatekeepers?: ExtraGatekeeper[];
   /** Private explicit-issue destination. */
   errorReporting: { enabled: boolean; environment?: string; release?: string | null };
   /** Workshop KV/R2. `null` requests Wrangler automatic provisioning. */
