@@ -5,10 +5,10 @@ import type {
   GatekeeperConnectOptions, GatekeeperUser, GatekeeperUserVerifier, GitCache, GitPullHints,
   ResourceConfiguratorFrame, ResourceDescription, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import type { ComputerSession, FilePage, GitCheckout, Job, JobOutput, JobStatus, Sandbox, SandboxInfo, ScreenshotOptions, ScreenshotImage } from "./types.js";
+import type { ComputerSession, FilePage, GitCheckout, Job, JobOutput, JobStatus, Sandbox, SandboxInfo, ScreenshotOptions, ScreenshotImage, StagedCheckout } from "./types.js";
 import { screenshotRequest } from "./screenshots.js";
 import type { Operation } from "./sandbox.js";
-import { PackStore, boundedInteger, commitId, MAX_FILE_BYTES, workspacePath } from "./storage.js";
+import { PackStore, boundedInteger, cancelPack, commitId, MAX_FILE_BYTES, workspacePath } from "./storage.js";
 import TYPES from "./types.txt";
 import MANAGER from "./generated/manager.txt";
 import { ComputerManagement } from "./management.js";
@@ -32,9 +32,51 @@ type SandboxRecord = SandboxInfo & { creationJob: string };
 export class ComputerGatekeeper extends DurableObject<Cloudflare.Env, AccountProps> implements Gatekeeper<ComputerSession> {
   #packs = new PackStore(this.ctx.storage);
   #applying = new Map<number, Promise<void>>();
+  #staging = new Set<number>();
 
   async checkAccess(): Promise<void> {
     await this.env.ACCOUNTS.get(this.env.ACCOUNTS.idFromString(this.ctx.props.accountId)).assertActive();
+    this.#recoverStaging();
+  }
+
+  #recoverStaging(): void {
+    const markers = [...this.ctx.storage.kv.list<boolean>({ prefix: "pendingCheckout:" })];
+    for (const [key] of markers) {
+      const id = Number(key.slice("pendingCheckout:".length));
+      if (this.#staging.has(id)) continue;
+      const action = this.ctx.storage.kv.get<ActionRecord>(`action:${id}`);
+      if (action?.state === "pending" && this.#packs.has(`input:${id}`)) continue;
+      if (action?.state === "pending") {
+        action.state = "rejected";
+        this.ctx.storage.kv.put(`action:${id}`, action);
+      }
+      this.#packs.delete(`input:${id}`);
+      this.ctx.storage.kv.delete(key);
+    }
+  }
+
+  stagedCheckouts(): StagedCheckout[] {
+    this.#recoverStaging();
+    const result: StagedCheckout[] = [];
+    for (const [key] of this.ctx.storage.kv.list<boolean>({ prefix: "pendingCheckout:" })) {
+      const id = Number(key.slice("pendingCheckout:".length));
+      const action = this.ctx.storage.kv.get<ActionRecord>(`action:${id}`);
+      if (!action || action.state !== "pending" || action.operation.kind !== "checkout") continue;
+      result.push({
+        jobId: action.jobId, sandboxId: action.sandboxId,
+        commitId: action.operation.commitId, directory: action.operation.directory,
+        state: this.#packs.has(`input:${id}`) ? "awaiting-approval" : "receiving",
+      });
+    }
+    return result;
+  }
+
+  async cancelStagedCheckout(jobId: string, queue: RpcStub<ApprovalQueue>): Promise<Job> {
+    await this.checkAccess();
+    const target = this.stagedCheckouts().find(item => item.jobId === jobId);
+    if (!target) throw new Error("Staged checkout does not belong to this connection or is unavailable.");
+    const action = await this.submit(target.sandboxId, { kind: "cancel", jobId }, queue);
+    return new JobImpl(this, target.sandboxId, action.jobId, queue.dup());
   }
 
   async describe(): Promise<ResourceDescription> {
@@ -100,10 +142,12 @@ export class ComputerGatekeeper extends DurableObject<Cloudflare.Env, AccountPro
 
   async submit(sandboxId: string, operation: Operation, queue: RpcStub<ApprovalQueue>, source?: GitCheckout): Promise<ActionRecord> {
     await this.checkAccess();
-    if (this.#creationApplied(sandboxId)) await this.info(sandboxId);
+    const cancelTarget = operation.kind === "cancel" ? this.action(operation.jobId, sandboxId) : undefined;
+    const pendingCancellation = cancelTarget?.state === "pending";
+    if (!pendingCancellation && this.#creationApplied(sandboxId)) await this.info(sandboxId);
     const sandbox = this.sandbox(sandboxId);
-    if (sandbox.state === "deleted" || sandbox.state === "failed" &&
-        !["stop", "destroy"].includes(operation.kind)) throw new Error("Sandbox is unavailable.");
+    if (!pendingCancellation && (sandbox.state === "deleted" || sandbox.state === "failed" &&
+        !["stop", "destroy"].includes(operation.kind))) throw new Error("Sandbox is unavailable.");
     const id = (this.ctx.storage.kv.get<number>("nextAction") ?? 0) + 1;
     this.ctx.storage.kv.put("nextAction", id);
     if (id > 1000) throw new Error("Connection action limit reached. Create a new connection.");
@@ -116,11 +160,20 @@ export class ComputerGatekeeper extends DurableObject<Cloudflare.Env, AccountPro
       if (source) {
         const pending = [...this.ctx.storage.kv.list<boolean>({ prefix: "pendingCheckout:", limit: 2 })];
         if (pending.length >= 2) {
-          await source.pack.cancel();
+          cancelPack(source.pack);
           throw new Error("Finish or reject existing checkouts before staging another.");
         }
         this.ctx.storage.kv.put(`pendingCheckout:${id}`, true);
-        await this.#packs.put(`input:${id}`, source.pack);
+        this.#staging.add(id);
+        try {
+          await this.#packs.put(`input:${id}`, source.pack);
+        } finally {
+          this.#staging.delete(id);
+        }
+        await this.checkAccess();
+        if (this.action(action.jobId, sandboxId).state !== "pending" || !this.#packs.has(`input:${id}`)) {
+          throw new Error("Checkout staging was cancelled.");
+        }
       }
       const details = this.#description(operation);
       const description: ActionDescription = {
@@ -136,10 +189,9 @@ export class ComputerGatekeeper extends DurableObject<Cloudflare.Env, AccountPro
       }
       await queue.submitAction(id, description);
     } catch (error) {
-      action.state = "rejected";
-      this.ctx.storage.kv.put(`action:${id}`, action);
-      this.#packs.delete(`input:${id}`);
-      this.ctx.storage.kv.delete(`pendingCheckout:${id}`);
+      if (this.action(action.jobId, sandboxId).state === "pending" && !this.#applying.has(id)) {
+        await this.rejectAction(id);
+      }
       throw error;
     }
     return action;
@@ -218,6 +270,18 @@ export class ComputerGatekeeper extends DurableObject<Cloudflare.Env, AccountPro
     const action = this.ctx.storage.kv.get<ActionRecord>(`action:${id}`);
     if (!action || action.state === "rejected") throw new Error("Action is unavailable.");
     if (action.state === "applied") return;
+    if (action.operation.kind === "checkout" && !this.#packs.has(`input:${id}`)) {
+      throw new Error("Checkout staging is incomplete.");
+    }
+    if (action.operation.kind === "cancel") {
+      const target = this.action(action.operation.jobId, action.sandboxId);
+      if (target.state !== "applied") {
+        await this.rejectAction(target.id);
+        action.state = "applied";
+        this.ctx.storage.kv.put(`action:${id}`, action);
+        return;
+      }
+    }
     if (["exec", "write", "checkout", "screenshot"].includes(action.operation.kind)) {
       const info = await this.info(action.sandboxId);
       if (info.state !== "ready" && info.state !== "stopped") throw new Error("Sandbox creation has not completed.");
@@ -328,6 +392,14 @@ export class ComputerSessionImpl extends RpcTarget implements ComputerSession {
     await this.#gatekeeper.checkAccess();
     await this.#queue.authorizeObservation({ title: "List development sandboxes", description: "Read sandbox names owned by this connection." });
     return this.#gatekeeper.list().map(({ id, name }) => ({ id, name }));
+  }
+  async listStagedCheckouts(): Promise<StagedCheckout[]> {
+    await this.#gatekeeper.checkAccess();
+    await this.#queue.authorizeObservation({ title: "List staged checkouts", description: "Read pending Git imports owned by this connection." });
+    return this.#gatekeeper.stagedCheckouts();
+  }
+  async cancelStagedCheckout(jobId: string): Promise<Job> {
+    return this.#gatekeeper.cancelStagedCheckout(jobId, this.#queue);
   }
   async openSandbox(id: string): Promise<Sandbox> {
     await this.#gatekeeper.checkAccess();

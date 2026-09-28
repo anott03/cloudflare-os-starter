@@ -6,13 +6,27 @@ export interface ComputerSession {
   listSandboxes(): Promise<Array<{ id: string; name: string }>>;
   /** Reopen a sandbox from this connection after a session ends. */
   openSandbox(id: string): Promise<Sandbox>;
+  /** List up to two pending imports, including uploads still receiving data and deleted sandboxes. Audited read. */
+  listStagedCheckouts(): Promise<StagedCheckout[]>;
+  /** Request approval to cancel a staged import by its jobId, even after its sandbox is deleted. */
+  cancelStagedCheckout(jobId: string): Promise<Job>;
+}
+
+/** A checkout occupying one of this connection's two staging slots. */
+export interface StagedCheckout {
+  /** Checkout job ID, not an approval action ID. Pass to cancelStagedCheckout(). */
+  jobId: string;
+  sandboxId: string;
+  commitId: string;
+  directory: string;
+  state: "receiving" | "awaiting-approval";
 }
 
 /** A shallow Git pack from GitHubRepo.exportCheckout(), containing no credentials. */
 export interface GitCheckout {
   /** Full 40-character commit ID, used as the shallow history boundary. */
   commitId: string;
-  /** Single-use Git pack stream. Maximum 64 MiB. */
+  /** Single-use Git pack stream. Maximum 64 MiB, with a 5-minute total staging timeout. Approval has no expiry. */
   pack: ReadableStream<Uint8Array>;
 }
 
@@ -21,7 +35,7 @@ export interface Sandbox {
   /** Return lifecycle state. A stopped sandbox restarts on the next command. */
   info(): Promise<SandboxInfo>;
   /**
-   * Queue a shell command with a bounded execution timeout, excluding time spent waiting.
+   * Queue a shell command with an execution timeout of at most 300,000 ms, excluding time spent waiting.
    * Requires approval unless the user has enabled command auto-approval for this connection.
    * Approved jobs run one at a time in approval order, with at most 16 waiting jobs per sandbox.
    * Later jobs still run after a failure. Check status before submitting dependent work.
@@ -95,7 +109,7 @@ export interface SandboxInfo {
 
 /** One submitted operation. Queued work may be waiting for approval or for an earlier approved job. */
 export interface Job {
-  /** Return lifecycle state and exit code. Interrupted jobs are never silently rerun. */
+  /** Return lifecycle state and exit code. Interrupted jobs are never silently rerun. The returned `id` is the plain job ID to save and reuse; reading `job.id` directly yields an RPC property that cannot be passed around. */
   status(): Promise<JobStatus>;
   /** Read captured output. At most 256 KiB is retained per job. */
   output(cursor?: string): Promise<JobOutput>;

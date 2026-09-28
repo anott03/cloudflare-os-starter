@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node build-manager.ts && tsc --noEmit && tsc --project tsconfig.browser.json && tsc --project tsconfig.manager.json",
     "build:manager": "node build-manager.ts",
+    "test": "tsc --project __tests__/tsconfig.json && vitest run",
     "types:generate": "node generate-types.ts",
     "build:worker": "node build-manager.ts && capnweb-validate build --out .wrangler/validate"
   },
@@ -17,10 +18,12 @@
     "isomorphic-git": "1.40.0"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "catalog:",
     "@types/node": "26.1.0",
     "esbuild": "0.28.1",
     "playwright": "1.63.0",
     "typescript": "catalog:",
+    "vitest": "catalog:",
     "wrangler": "catalog:"
   }
 }
