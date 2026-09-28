@@ -2,7 +2,7 @@ FROM ghcr.io/cloudflare/computer-computerd-linux-x64:0.3.1 AS computerd
 FROM node:24-trixie-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends fuse3 libfuse2t64 ca-certificates git python3 python3-venv build-essential \
+ && apt-get install -y --no-install-recommends fuse3 libfuse2t64 ca-certificates curl procps git python3 python3-venv build-essential \
  && corepack enable && corepack prepare pnpm@11.17.0 --activate \
  && rm -rf /var/lib/apt/lists/*
 

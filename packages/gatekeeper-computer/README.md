@@ -11,6 +11,7 @@ Agents use this connector to import source, edit files, install dependencies, bu
 - `src/git.ts` exports local commits and their objects into the OS Git cache.
 - `src/account-state.ts` owns the account's sandbox registry, quota, and durable management operations. `src/management.ts` is the account UI's RPC capability, and `manager/` is its page, bundled into `src/generated/manager.txt` by `build-manager.ts` during builds.
 - `src/storage.ts` stores bounded Git packs outside the sandbox filesystem so agents cannot modify retained exports.
+- `src/execution.ts` runs commands with an explicit environment (CA trust, Playwright browsers, no Git prompts) and writes files with created parent directories.
 - `Dockerfile` includes Node 24, pnpm, Git, Python, build tools, and Playwright 1.63.0 with Chromium headless shell. computerd is pinned to 0.3.1.
 - `browser/screenshot.ts` captures a local app in a fresh browser context. Browser binaries are downloaded at image build time, not from sandbox jobs.
 - `src/types.d.ts` is the agent API. `src/types.txt` is a symlink to it.
@@ -29,7 +30,7 @@ Check that sandbox creation has completed before submitting work. Later approved
 2. Wait until `info().state` is `ready` or `stopped`.
 3. Call the connected repository's `exportCheckout("main")`, then pass that result to `sandbox.checkout(source, "/workspace/repo")`. The checkout contains a real `.git` directory, a detached HEAD, and a shallow boundary at the imported commit.
 4. Edit with `writeFile()` or shell commands. Run package installation, builds, and tests with `exec(command, { cwd: "/workspace/repo", timeoutMs: 300000 })`.
-5. Save each `job.status().id`. Use `getJob(id)`, `status()`, and paginated `output()` across sessions. Do not infer success from empty output; require `state: "completed"` and `exitCode: 0`.
+5. Save each `job.status().id`; reading `job.id` directly yields an RPC property, not a plain string. Use `getJob(id)`, `status()`, and paginated `output()` across sessions. Do not infer success from empty output; require `state: "completed"` and `exitCode: 0`.
 6. Create a local commit using Git, supplying your intended author name and email. Nothing configures a guessed identity or GitHub remote credentials.
 7. Submit `sandbox.stop()` and wait for completion. This prevents background processes from changing Git objects during export. Files synchronized after a completed command remain durable; unsynchronized background writes may be lost.
 8. Call `sandbox.exportCommit("/workspace/repo")`. This imports the commit and its file objects into OS and returns its full commit ID. It does not push to GitHub.
@@ -37,6 +38,8 @@ Check that sandbox creation has completed before submitting work. Later approved
 10. Submit `sandbox.destroy()` when finished and wait for its job. The account's sandbox slot is released once deletion is observed, by `info()`, a later sandbox creation, or the Sandboxes manager. Exported packs remain in the connection for OS cache refill and pending pushes.
 
 The container does not receive a GitHub network credential, so `git push`, `gh`, and private `git clone` cannot replace steps 3 and 9. Public cloning through `exec()` is subject to egress policy; only repositories imported through `checkout()` can use `exportCommit()`.
+
+A checkout import occupies one of the connection's two staging slots until its approval is applied or cancelled. Interrupted uploads are swept automatically on the next session use, so an abandoned stream no longer blocks new checkouts. `COMPUTER.listStagedCheckouts()` lists the pending imports, including one still receiving its pack or whose sandbox was deleted, and `COMPUTER.cancelStagedCheckout(jobId)` cancels one through the normal approval flow.
 
 ## Screenshots and image output
 
@@ -72,6 +75,20 @@ PNG output is limited to 1 MiB, 4096 × 8192 maximum dimensions, and 8 megapixel
 Each sandbox retains at most 32 screenshot artifacts. Reads use the owning connection's observation checks. Destroying a sandbox removes its screenshot copies, but images already emitted into CFOS remain private chat attachments until that chat is deleted. No R2 bucket, presigned URL, or public image endpoint is created. Screenshots can contain confidential UI data; emitting them sends that data to the configured image-capable model provider. They are agent-produced artifacts, not tamper-proof evidence.
 
 This feature also changes `cloudflare-os/packages/workshop-shared`, `workshop-backend`, and `workshop-frontend`. Deployment requires the Computer image/Worker and the CFOS stack. A Computer-only deployment can capture PNGs but cannot add image output to an older CFOS agent runtime.
+
+## Runtime environment and tooling
+
+Every executed command and its child processes receive an explicit environment: `NODE_EXTRA_CA_CERTS` pointing at the Cloudflare container CA, `PLAYWRIGHT_BROWSERS_PATH` pointing at the installed Chromium, and `GIT_TERMINAL_PROMPT=0`. Node-based tools get TLS trust and browser discovery without per-command variables. The system trust store includes the same CA for other runtimes.
+
+The image ships Node 24, pnpm 11, Git, Python 3 with venv, build-essential, curl, and ps. `gh` is not included.
+
+Package-manager friction worth knowing:
+
+- pnpm 11 reads build-script approval from the project's `pnpm-workspace.yaml` (`onlyBuiltDependencies`); the `pnpm` field in package.json is ignored, and `pnpm approve-builds` is interactive-only, so it cannot run in a queued command.
+- `pnpm exec <tool>` verifies dependencies first. If the install recorded ignored build scripts (esbuild, sharp, workerd), it exits with `ERR_PNPM_IGNORED_BUILDS` even though the binaries work. Put the list in `pnpm-workspace.yaml` before installing, or reinstall after adding it.
+- To bypass the pre-exec check, run the tool's real entry point directly, for example `node node_modules/astro/bin/astro.mjs dev`. pnpm's symlinked layout differs from npm's, so an npm-style path may not exist; resolve the entry from the package's `bin` field.
+
+Cloudflare dev runtimes (`wrangler dev`, `@astrojs/cloudflare`, and similar) use SQLite locking that fails on the /workspace FUSE mount with `database is locked: SQLITE_BUSY`. Copy the project to the container's root disk, for example `/root/site`, and run the dev server there. Copy changed files back under `/workspace` before stopping or exporting: only `/workspace` is durable, and `writeFile()`/`readFile()` cannot reach `/root`.
 
 ## Sandbox manager
 
@@ -120,6 +137,7 @@ Default limits:
 | Screenshot execution timeout | At most 60 seconds |
 | File read/write per call | 64 KiB |
 | Incoming Git pack | 64 MiB |
+| Checkout pack staging | 5 minutes, including transfer |
 | Pending checkouts per connection | 2 |
 | Exported object content per export | 16 MiB |
 | Objects per export | 10,000 |
@@ -157,7 +175,7 @@ A full dry-run requires a working Docker daemon:
 pnpm --dir packages/gatekeeper-computer exec wrangler deploy --dry-run
 ```
 
-Neither dry-run verifies live GitHub authorization, the Computer sync protocol, cancellation across failures, or runtime isolation. No project tests have been added or run for this integration. The screenshot image builds locally. Disposable Docker smoke checks passed for viewport, element, and full-page captures, external-resource blocking, forbidden URL rejection, redirect blocking, and a missing-selector timeout. These checks used no external network or published ports. The screenshot feature also passes local type checks for `workshop-shared`, `workshop-backend`, and `workshop-frontend`. Capture through Computer's live synchronization protocol, private chat display, model image input, and replay still need end-to-end verification.
+Neither dry-run verifies live GitHub authorization, the Computer sync protocol, cancellation across failures, or runtime isolation. Package tests (`pnpm --dir packages/gatekeeper-computer test`) run in workerd against the real Gatekeeper facet and Workspace runtime: staging recovery and cancellation, pack storage cleanup, the explicit execution environment, file writes with created parents, and screenshot failure diagnostics. The GitHub export spool is covered by the GitHub Gatekeeper's own suites. No test runs a live container or GitHub. The screenshot image builds locally. Disposable Docker smoke checks passed for viewport, element, and full-page captures, external-resource blocking, forbidden URL rejection, redirect blocking, and a missing-selector timeout. These checks used no external network or published ports. The screenshot feature also passes local type checks for `workshop-shared`, `workshop-backend`, and `workshop-frontend`. Capture through Computer's live synchronization protocol, private chat display, model image input, and replay still need end-to-end verification.
 
 ## Before deployment
 

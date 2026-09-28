@@ -7,6 +7,7 @@ import { inspectAgentPng, MAX_AGENT_IMAGE_BYTES } from "@gadgets/workshop-shared
 import type { ScreenshotRequest } from "./screenshots.js";
 import type { ManagedSandboxStatus } from "./management-types.js";
 import { exportGit } from "./git.js";
+import { executeCommand, writeWorkspaceFile } from "./execution.js";
 import { PackStore, boundedInteger, byteStream, commitId, MAX_FILE_BYTES, MAX_OUTPUT_BYTES, workspacePath } from "./storage.js";
 
 export type Operation =
@@ -279,7 +280,11 @@ export class ComputerSandbox extends withWorkspaceContainer(class extends Durabl
       this.#live();
       await this.#run(job);
       job.state = job.exitCode === 0 ? "completed" : "failed";
-    } catch {
+    } catch (error) {
+      if (job.operation.kind === "write") {
+        const detail = error instanceof Error ? error.message.slice(0, 2048) : "Filesystem operation failed.";
+        this.#append(job, "stderr", `File write failed: ${detail}\n`);
+      }
       await this.#stop();
       job.state = "failed";
       job.error = "Operation failed. Inspect captured output; partial effects may remain.";
@@ -310,7 +315,7 @@ export class ComputerSandbox extends withWorkspaceContainer(class extends Durabl
       await this.getWorkspaceContainer().setInactivityTimeout(this.env.IDLE_TIMEOUT_MS);
       job.exitCode = 0;
     } else if (operation.kind === "write") {
-      await ws.fs.writeFile(workspacePath(operation.path), operation.content);
+      await writeWorkspaceFile(ws.fs, operation.path, operation.content);
       job.exitCode = 0;
     } else if (operation.kind === "exec") {
       await this.#command(job, operation.command, operation.cwd, operation.timeoutMs);
@@ -372,8 +377,8 @@ export class ComputerSandbox extends withWorkspaceContainer(class extends Durabl
   async #command(job: StoredJob, command: string, cwd: string, timeoutMs: number): Promise<void> {
     if (this.#job(job.id).state === "cancelled") return;
     const ws = this.#ws();
-    using run = await ws.runtime.exec(command, {
-      id: job.id, cwd, timeoutMs: Math.min(timeoutMs, this.env.MAX_COMMAND_MS), encoding: "utf8", sync: "wait",
+    using run = await executeCommand(ws.runtime, command, {
+      id: job.id, cwd, timeoutMs: Math.min(timeoutMs, this.env.MAX_COMMAND_MS),
     });
     if (this.#job(job.id).state === "cancelled") {
       await this.#stop();

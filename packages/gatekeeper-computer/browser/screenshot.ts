@@ -2,17 +2,6 @@ import { writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { chromium } from "playwright";
 
-const { values } = parseArgs({ options: {
-  url: { type: "string" },
-  file: { type: "string" },
-  width: { type: "string" },
-  height: { type: "string" },
-  timeout: { type: "string" },
-  selector: { type: "string" },
-  "wait-for-selector": { type: "string" },
-  "full-page": { type: "boolean", default: false },
-}, strict: true });
-
 function integer(value: string | undefined, maximum: number): number {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < 1 || number > maximum) throw new Error("Invalid capture limit.");
@@ -26,6 +15,16 @@ function checkDimensions(width: number, height: number): void {
 }
 
 async function capture(): Promise<void> {
+  const { values } = parseArgs({ options: {
+    url: { type: "string" },
+    file: { type: "string" },
+    width: { type: "string" },
+    height: { type: "string" },
+    timeout: { type: "string" },
+    selector: { type: "string" },
+    "wait-for-selector": { type: "string" },
+    "full-page": { type: "boolean", default: false },
+  }, strict: true });
   const url = new URL(values.url ?? "");
   if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
       url.username || url.password || Number(url.port) < 1024 || Number(url.port) === 8080) {
@@ -97,7 +96,8 @@ async function capture(): Promise<void> {
   }
 }
 
-await capture().catch(() => {
-  console.error("Screenshot failed. Check that the local app and selectors are ready, and that the capture fits the size and time limits.");
+await capture().catch(error => {
+  const detail = error instanceof Error ? error.message.slice(0, 2048) : "Capture could not complete.";
+  process.stderr.write(`Screenshot failed: ${detail}\n`);
   process.exitCode = 1;
 });

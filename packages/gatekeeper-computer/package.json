@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node build-manager.ts && tsc --noEmit && tsc --project tsconfig.browser.json && tsc --project tsconfig.manager.json",
     "build:manager": "node build-manager.ts",
-    "test": "tsc --project __tests__/tsconfig.json && vitest run",
+    "test": "tsc --project __tests__/tsconfig.json && vitest run && node --test __tests__/runtime-screenshot.test.mjs",
     "types:generate": "node generate-types.ts",
     "build:worker": "node build-manager.ts && capnweb-validate build --out .wrangler/validate"
   },
