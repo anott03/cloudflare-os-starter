@@ -33,10 +33,11 @@ A dependency's new major can need code changes as well as a version bump, such a
 
 ## Base Wrangler Configs And Vars *(starter)*
 
-`generateConfigs()` (`packages/cf-os/src/core/deployment.ts`) rebuilds sections of upstream's base configs rather than copying them. Read the base-config diffs in the range for:
+`generateConfigs()` (`packages/cf-os/src/core/deployment.ts`) rebuilds sections of upstream's base configs rather than copying them. Read the range's diffs of the base configs, and of each Worker's `src/env.d.ts`, for:
 
 - New required vars. Some fail closed at runtime, not at deploy.
 - Renamed vars.
+- Vars a Worker reads that no base config declares, in `env.d.ts` or as `env.X ?? <default>` in its code. Upstream's deploy service sets these itself, so `generateConfigs()` has to as well, and nothing fails without them: Web Search's `CF_AI_GATEWAY` silently falls back to `default`.
 - New bindings.
 - Routes that need adding to lists the starter overrides, such as `assets.run_worker_first`.
 - A change in how upstream produces its configs.
