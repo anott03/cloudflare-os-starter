@@ -336,14 +336,31 @@ async function askDisplay(session: Session, file: Record<string, unknown>): Prom
   return { name, message };
 }
 
+/**
+ * The name of a Worker a takeover adds, which the instance does not have yet. One the account
+ * already has is this deployment's only if the operator says so (a rerun after a deploy); otherwise
+ * deploying would overwrite another application's Worker, so it asks again.
+ */
+async function askNewWorker(session: Session, workers: CfWorker[], question: string, initial: string): Promise<string> {
+  const { prompter, ctx } = session;
+  for (;;) {
+    const name = await prompter.text(question, { initial, validate: workerNameProblem });
+    if (!workers.some((worker) => worker.name === name)) return name;
+    ctx.out.log(`Already in the account: ${name}. Deploying would overwrite it.`);
+    if (await prompter.confirm(`Is ${name} this deployment's own, to deploy over?`, false)) return name;
+    initial = name;
+  }
+}
+
 async function takeover(session: Session, file: Record<string, unknown>, chosen?: string): Promise<DeploymentEdit[] | null> {
   const { prompter, ctx, account } = session;
   const client = session.client!;
   const instance = chosen ?? await pickInstance(ctx, client, account.id, "pnpm cf-os import --account <id>");
   if (!instance) return null;
-  const discovery = discover(instance, await fetchInventory(client, account.id));
+  const inventory = await fetchInventory(client, account.id);
+  const discovery = discover(instance, inventory);
   ctx.out.log(`Hosted instance "${instance}" in account ${account.id}:\n\n${formatReport(instance, discovery)}\n`);
-  if (!discovery.edits.length) {
+  if (!discovery.matched) {
     ctx.out.log("Nothing matched; nothing to write. Check the instance name against the Worker list.");
     return null;
   }
@@ -357,13 +374,11 @@ async function takeover(session: Session, file: Record<string, unknown>, chosen?
     admins: parseAdmins(await prompter.text("Admin emails, comma-separated (they can open /admin)", {
       initial: adminDefault, validate: adminsProblem,
     })),
-    websearch: hasWebsearch ? undefined : await prompter.text(
-      "Web Search Gatekeeper Worker name (the instance has none; the deploy creates it)",
-      { initial: names.websearch, validate: workerNameProblem }),
-    customGatekeeper: await prompter.text("Custom Gatekeeper Worker name",
-      { initial: names.customGatekeeper, validate: workerNameProblem }),
-    errorReporter: await prompter.text("Error Reporter Worker name",
-      { initial: names.errorReporter, validate: workerNameProblem }),
+    websearch: hasWebsearch ? undefined : await askNewWorker(session, inventory.workers,
+      "Web Search Gatekeeper Worker name (the instance has none; the deploy creates it)", names.websearch),
+    customGatekeeper: await askNewWorker(session, inventory.workers, "Custom Gatekeeper Worker name",
+      names.customGatekeeper),
+    errorReporter: await askNewWorker(session, inventory.workers, "Error Reporter Worker name", names.errorReporter),
     providers: await askProviders(session, file),
     display: await askDisplay(session, file),
   };

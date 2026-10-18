@@ -102,14 +102,15 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
   if (!instance) return 1;
 
   const discovery = discover(instance, await fetchInventory(client, account.id));
-  if (account.isNew) discovery.edits.unshift({ path: ["accountId"], value: account.id });
 
   ctx.out.log(`Hosted instance "${instance}" in account ${account.id}:\n`);
   ctx.out.log(formatReport(instance, discovery));
-  if (!discovery.edits.length) {
-    ctx.out.log("\nNothing matched; nothing to write. Check the instance name against the Worker list.");
+  if (!discovery.matched) {
+    ctx.out.log(`\nNo hosted instance "${instance}" here: it has no router and Workshop Workers. Nothing to ` +
+      "write. Check the instance name against the Worker list.");
     return 1;
   }
+  if (account.isNew) discovery.edits.unshift({ path: ["accountId"], value: account.id });
   ctx.out.json(editsAsFragment(discovery.edits));
   if (out) {
     const outPath = resolve(ctx.cwd, out);

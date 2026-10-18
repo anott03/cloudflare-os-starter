@@ -65,6 +65,11 @@ export interface ReportRow {
 
 /** What {@link discover} concluded. */
 export interface Discovery {
+  /**
+   * Whether instance `n` exists: its router and Workshop are both in the account, as
+   * `findInstances` tells one. `edits` alone cannot say, as it holds account-wide values too.
+   */
+  matched: boolean;
   /** The values to write: found ones only. */
   edits: DeploymentEdit[];
   rows: ReportRow[];
@@ -171,5 +176,7 @@ export function discover(n: string, inventory: Inventory): Discovery {
     .filter((name) => name.startsWith(`${n}-gk-`) && !deployed.has(name.slice(`${n}-gk-`.length)))
     .toSorted();
 
-  return { edits, rows, orphanedGatekeepers, notes };
+  const matched = ["workers.router.name", "workers.workshop.name"]
+    .every((path) => rows.some((row) => row.path === path && row.found !== null));
+  return { matched, edits, rows, orphanedGatekeepers, notes };
 }

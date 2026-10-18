@@ -79,6 +79,18 @@ test("uses the only account cf can reach, and records it", async (t) => {
   assert.equal(valueAtPath(parseDeployment(readFileSync(join(root, "deployment.jsonc"), "utf8")), ["accountId"]), FAKE_ACCOUNT);
 });
 
+test("refuses an instance the account does not have, though its Access issuer is there", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  for (const out of [undefined, "init.jsonc"]) {
+    const { code, json, stderr } = await importing(root, ["acmee"], { out, flags: { account: FAKE_ACCOUNT } });
+    assert.equal(code, 1);
+    assert.deepEqual(json, []);
+    assert.match(stderr(), /No hosted instance "acmee" here/);
+  }
+  assert.equal(readFileSync(join(root, "deployment.jsonc"), "utf8"), TEMPLATE);
+  assert.throws(() => readFileSync(join(root, "init.jsonc")), /ENOENT/);
+});
+
 test("without an instance, lists the account's hosted instances", async (t) => {
   const root = scratchProject(t, TEMPLATE);
   const { code, stderr } = await importing(root, [], { flags: { account: FAKE_ACCOUNT } });

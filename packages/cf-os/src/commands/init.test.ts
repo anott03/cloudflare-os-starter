@@ -199,6 +199,34 @@ test("adds a One-time PIN provider, validating it first", async (t) => {
   assert.deepEqual(created, [true, false]);
 });
 
+test("on a takeover, asks again for a Worker it would add that another application has", async (t) => {
+  const hosted = hostedAccount();
+  const replies = {
+    ...account(), ...hosted, "auth whoami": { authenticated: true, email: "me@example.com" },
+    "workers list": [...hosted["workers list"] as object[], { name: "acme-errors" }, { name: "acme-gk-custom" }],
+  };
+  const { code, written, stderr } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Custom Gatekeeper Worker name", DEFAULT],
+    ["Is acme-gk-custom this deployment's own", true],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Is acme-errors this deployment's own", false],
+    ["Error Reporter Worker name", "acme-reporter"],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
+  ], replies);
+  assert.equal(code, 0);
+  assert.match(stderr(), /Already in the account: acme-errors\. Deploying would overwrite it\./);
+  const file = written();
+  assert.equal(valueAtPath(file, ["workers", "customGatekeeper", "name"]), "acme-gk-custom");
+  assert.equal(valueAtPath(file, ["workers", "errorReporter", "name"]), "acme-reporter");
+});
+
 test("switches to a takeover when the name is a hosted instance", async (t) => {
   const { code, written, prompter, stderr } = await init(t, [
     ["What are you setting up?", "new"],
