@@ -34,7 +34,7 @@ So:
   not lost, but nothing reads it any more, and the app looks freshly installed.
 
 KV and R2 work the same way, except that the binding names the resource explicitly — which is why
-leaving `resources.*` as `null` is the trap in section 3.
+leaving `resources.*` as `null` is the trap in section 4.
 
 ## 2. Find what the instance runs
 
@@ -103,7 +103,7 @@ new names; nothing depends on them yet.
 
 ```jsonc
 "workers": {
-  // Hosted instances run on workers.dev; section 4 has the custom-domain form.
+  // Hosted instances run on workers.dev; section 5 has the custom-domain form.
   "router": { "name": "N", "route": { "workersDev": true } },
   "workshop": { "name": "N-backend" },
   "context": { "name": "N-gk-context" },
@@ -249,7 +249,7 @@ and reuse this same application, so it adds nothing, and the lookup already wrot
 
 The application already covers the hostname the router answers on, so keeping the URL keeps Access
 working untouched. Only if you are moving the instance to a new hostname do you have to extend the
-application to cover it — before deploying, and along with `context.sharingDomain` from section 3.
+application to cover it — before deploying, and along with `context.sharingDomain` from section 4.
 
 ## 8. What you lose
 
@@ -270,7 +270,7 @@ application to cover it — before deploying, and along with `context.sharingDom
 Beyond the [standard checks](../README.md#4-verify-the-deployment):
 
 1. Sign in as an existing user and confirm the identity is recognised, not re-created.
-2. Open the model picker. It must list models — an empty picker means section 5 was skipped.
+2. Open the model picker. It must list models — an empty picker means section 6 was skipped.
 3. Open a gadget that existed before the migration, and confirm its history is intact.
 4. Open the Context library and confirm its collections are still listed.
 5. Confirm schedules made before the migration are still listed, and that a new one fires.
