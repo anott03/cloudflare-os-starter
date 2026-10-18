@@ -173,9 +173,9 @@ Point it at the gateway the hosted flow already created for you, `N-ai`:
 - Adding `"google"` does require a token — see
   [AI models](customization.md#ai-models).
 
-Web Search does not use `N-ai`. It searches through the account's `default` gateway, fixed upstream,
-which Cloudflare creates on first use. Searches need AI Gateway credits on the account or a Ceramic
-key on that gateway: see [Workers and routing](customization.md#workers-and-routing).
+Web Search searches through `N-ai` too, as the hosted deploy has it do: the deploy sets the
+Workshop's gateway as its `CF_AI_GATEWAY`. Searches need AI Gateway credits on the account or a
+Ceramic key on that gateway: see [Workers and routing](customization.md#workers-and-routing).
 
 ## 6. Cloudflare Access
 

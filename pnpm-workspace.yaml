@@ -14,7 +14,7 @@ packages:
 # workers-types or typescript makes the submodule's declarations fail to match this side's. Keep
 # those three in step by hand when bumping the gitlink. The rest follow upstream for convenience.
 catalog:
-  '@cloudflare/vitest-pool-workers': ^0.22.0
+  '@cloudflare/vitest-plugin': ^1.4.3
   '@cloudflare/workers-types': ^5.20261001.1
   capnweb: ^0.12.0
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
@@ -28,14 +28,14 @@ catalog:
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
   vite: 7.3.6
-  vite-plus: ^1.0.0
-  vitest: ^4.1.11
+  vite-plus: ^1.2.0
+  vitest: ^5.0.5
   wrangler: ^4.147.0
 
 overrides:
   # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.
-  '@cloudflare/vitest-pool-workers>miniflare': "catalog:"
-  '@cloudflare/vitest-pool-workers>wrangler': "catalog:"
+  '@cloudflare/vitest-plugin>miniflare': "catalog:"
+  '@cloudflare/vitest-plugin>wrangler': "catalog:"
   # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the
   # catalog so this and the manifests can't disagree: a catalog only covers what a workspace
   # manifest declares itself, and the override is what reaches vite as somebody else's peer.

@@ -113,7 +113,8 @@ export interface DeploymentConfig {
     scheduler: { name: string };
     /**
      * The Web Search Gatekeeper. Ambient, like Context and Scheduler, and preinstalled by the hosted
-     * flow. Searches through the account's `default` AI Gateway.
+     * flow. Searches through `aiGateway`'s gateway; through the account's `default` one when that is
+     * disabled or in another account.
      */
     websearch: { name: string };
     customGatekeeper: { name: string };

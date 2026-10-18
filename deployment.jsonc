@@ -33,10 +33,10 @@
     "scheduler": { "name": "<SCHEDULER_WORKER_NAME>" },
 
     // The Web Search Gatekeeper, which lets agents search the public web. Ambient too. It searches
-    // through the account's "default" AI Gateway -- fixed upstream, independent of aiGateway.name
-    // below -- which Cloudflare creates on first use. Searches are billed separately from models:
-    // load AI Gateway credits on the account, or store a Ceramic key on the "default" gateway, or
-    // every search fails. See docs/customization.md#workers-and-routing.
+    // through aiGateway.name below, the Workshop's gateway ("default" with the catalog off, or a
+    // gateway in another account). Searches are billed separately from models: load AI Gateway
+    // credits on the account, or store a Ceramic key (alias "default") on that gateway, or every
+    // search fails. See docs/customization.md#workers-and-routing.
     "websearch": { "name": "<WEBSEARCH_WORKER_NAME>" },
 
     "customGatekeeper": { "name": "<CUSTOM_GATEKEEPER_WORKER_NAME>" },

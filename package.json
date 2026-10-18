@@ -19,7 +19,7 @@
     "deploy": "node scripts/install-submodule.ts --check && node scripts/deploy.ts"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@types/node": "26.1.0",
     "jsonc-parser": "^3.3.1",
     "typescript": "catalog:",

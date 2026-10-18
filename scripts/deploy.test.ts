@@ -353,8 +353,14 @@ test("deploys the ambient Web Search Gatekeeper the hosted flow preinstalls", as
   assert.deepEqual(generated.websearch.rules, bases.websearch.rules);
   assert.deepEqual(generated.websearch.migrations, bases.websearch.migrations);
   assert.ok(generated.websearch.migrations!.length > 0, "websearch lost its DO migrations");
-  assert.equal(generated.websearch.vars, undefined);
   assert.equal(generated.websearch.secrets, undefined);
+
+  // It searches through the Workshop's gateway, when the AI binding can reach it; else `default`.
+  assert.deepEqual(generated.websearch.vars, { CF_AI_GATEWAY: "cloudflare-os" });
+  const off = generateConfigs(variant((c) => { c.aiGateway.enabled = false; }), bases);
+  assert.equal(off.websearch.vars, undefined);
+  const elsewhere = generateConfigs(variant((c) => { c.aiGateway.accountId = "fedcba9876543210fedcba9876543210"; }), bases);
+  assert.equal(elsewhere.websearch.vars, undefined);
 
   // Deployed before the Workshop, which binds it; type-checked before deploying.
   const builds = buildCommands(validConfig).map(({ args }) => args);

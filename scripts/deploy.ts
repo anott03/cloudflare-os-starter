@@ -558,11 +558,13 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   // here without adding a configuration surface for it.
   setCommon(scheduler, config, config.workers.scheduler.name);
 
-  // Likewise nothing of its own to configure. Its base config's `ai` binding, `.txt` rule and
-  // Durable Object migrations carry over as they are. The search itself goes through the account's
-  // `default` AI Gateway (`GATEWAY_ID` in gatekeeper-websearch/src/search.ts), which Cloudflare
-  // creates on first use -- independent of `aiGateway.name`, which only steers the Workshop.
+  // Its base config's `ai` binding, `.txt` rule and Durable Object migrations carry over as they
+  // are. It searches through the gateway `CF_AI_GATEWAY` names (gatekeeper-websearch/src/search.ts),
+  // the Workshop's, as upstream's deploy service sets it, so its searches share that gateway's keys,
+  // limits and logs. Unset, it is `default`, which Cloudflare creates on first use: so with the
+  // catalog off, and for a gateway in another account, which the `AI` binding cannot reach.
   setCommon(websearch, config, config.workers.websearch.name);
+  if (gateway && !gateway.crossAccount) websearch.vars = { CF_AI_GATEWAY: config.aiGateway.name };
 
   setCommon(customGatekeeper, config, config.workers.customGatekeeper.name);
   customGatekeeper.vars = {
