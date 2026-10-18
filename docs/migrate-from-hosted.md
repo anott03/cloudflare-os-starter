@@ -49,7 +49,9 @@ Find your hosted instance name — call it `N` — in the wizard, or read it off
 
 The Gatekeeper suffixes are the hosted flow's choice, not the starter's, so confirm them against
 the dashboard worker list rather than assuming the pattern. An instance deployed before Web Search
-shipped has no `N-gk-websearch`. Name it yourself, and the deploy creates it. The starter also deploys two
+shipped has no `N-gk-websearch`. Name it yourself, and the deploy creates it. Its users finished
+onboarding before Web Search existed, so none of them has it until it is set to enabled in `/admin`
+or they turn it on from the Gatekeepers page. The starter also deploys two
 Workers the hosted flow does not: the example custom Gatekeeper and the Error Reporter. Give those
 new names; nothing depends on them yet.
 
@@ -172,7 +174,8 @@ Point it at the gateway the hosted flow already created for you, `N-ai`:
   [AI models](customization.md#ai-models).
 
 Web Search does not use `N-ai`. It searches through the account's `default` gateway, fixed upstream,
-which Cloudflare creates on first use.
+which Cloudflare creates on first use. Searches need AI Gateway credits on the account or a Ceramic
+key on that gateway: see [Workers and routing](customization.md#workers-and-routing).
 
 ## 6. Cloudflare Access
 
@@ -211,7 +214,8 @@ Beyond the [standard checks](../README.md#4-verify-the-deployment):
 4. Open the Context library and confirm its collections are still listed.
 5. Confirm schedules made before the migration are still listed, and that a new one fires.
 6. Send one message to confirm inference actually routes.
-7. Ask an agent to search the web, and confirm results come back.
+7. Turn Web Search on for your user (section 2), then ask an agent to search the web, and confirm
+   results come back.
 
 If the model picker is empty or the app looks freshly installed, **stop before writing anything**.
 Both are binding problems, not data loss: compare the deployed Worker names and resource IDs against

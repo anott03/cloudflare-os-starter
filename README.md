@@ -108,7 +108,7 @@ Backend error reporting is enabled without a vendor account. Explicit upstream i
 - Enable the Custom Gatekeeper, ask for deployment information, and confirm its read appears as an observation.
 - Open the Error Reporter Worker's [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) and verify its structured `error_report` query surface.
 - Ask an agent to schedule something a few minutes out, and confirm it runs — that exercises the Scheduler Gatekeeper end to end.
-- Ask an agent to search the web for something recent, and confirm it returns results. That exercises the Web Search Gatekeeper and the account's `default` AI Gateway it searches through.
+- Ask an agent to search the web for something recent, and confirm it returns results. That exercises the Web Search Gatekeeper and the account's `default` AI Gateway it searches through. Searches need AI Gateway credits or a Ceramic key on that gateway, not just the free Workers AI allowance: see [Workers and routing](docs/customization.md#workers-and-routing).
 - Review logs for the router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, and Error Reporter Workers.
 
 ## Customization
