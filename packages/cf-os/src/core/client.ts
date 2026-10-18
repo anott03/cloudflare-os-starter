@@ -160,34 +160,67 @@ export function accessAppHosts(app: CfAccessApp): string[] {
  */
 const GATING_TYPES = new Set(["self_hosted", "ssh", "vnc", "rdp"]);
 
+/** Whether one hostname label matches a pattern label, in which a `*` stands for any run of characters. */
+function labelMatches(pattern: string, label: string): boolean {
+  if (!pattern.includes("*")) return pattern === label;
+  const parts = pattern.split("*").map((part) => part.replace(/[^a-z\d-]/g, "\\$&"));
+  return new RegExp(`^${parts.join("[^.]*")}$`).test(label);
+}
+
+/**
+ * Whether a wildcard hostname such as `*.example.com` matches `host`. As in Access, a `*` stands
+ * within one label, so `*.example.com` covers `os.example.com` but not `example.com` or
+ * `os.team.example.com`.
+ */
+function wildcardMatches(pattern: string, host: string): boolean {
+  const patterns = pattern.split(".");
+  const labels = host.split(".");
+  return patterns.length === labels.length && patterns.every((label, i) => labelMatches(label, labels[i]));
+}
+
+/**
+ * How specifically an Access application names `host` for every path of it: `Infinity` through a
+ * destination that is `host` itself; through a wildcard one, the characters it matches literally
+ * (`*.team.example.com` over `*.example.com`); `-1` when it does not gate them all. Only a
+ * destination without a path (or `/`, `/*`) counts: one on `/admin` leaves `/` and `/api` open.
+ */
+function specificity(app: CfAccessApp, host: string): number {
+  if (!GATING_TYPES.has(app.type ?? "self_hosted")) return -1;
+  const target = host.toLowerCase();
+  return Math.max(-1, ...accessAppDestinations(app)
+    .filter((destination) => ["", "/", "/*"].includes(destination.path))
+    .map(({ host: name }) => name === target ? Infinity
+      : name.includes("*") && wildcardMatches(name, target) ? name.replaceAll("*", "").length : -1));
+}
+
 /**
  * How an Access application gates every path of `host`: `"exact"` through a destination that is
- * `host` itself, `"wildcard"` through a `*.<parent>` one `host` sits under, `null` when it does not.
- * Only a destination without a path (or `/`, `/*`) counts: one on `/admin` leaves `/` and `/api`
- * open. Lenient about wildcard depth on purpose: this backs a check that fails deploys, and a false
- * "not covered" would block a correct one.
+ * `host` itself, `"wildcard"` through one whose `*` matches it, `null` when it does not. Only a
+ * destination without a path (or `/`, `/*`) counts: one on `/admin` leaves `/` and `/api` open.
  */
 export function accessAppCoverage(app: CfAccessApp, host: string): "exact" | "wildcard" | null {
-  if (!GATING_TYPES.has(app.type ?? "self_hosted")) return null;
-  const target = host.toLowerCase();
-  const whole = accessAppDestinations(app).filter((destination) => ["", "/", "/*"].includes(destination.path));
-  if (whole.some((destination) => destination.host === target)) return "exact";
-  return whole.some((destination) =>
-    destination.host.startsWith("*.") && target.endsWith(destination.host.slice(1))) ? "wildcard" : null;
+  const score = specificity(app, host);
+  return score === Infinity ? "exact" : score >= 0 ? "wildcard" : null;
 }
 
 /** Whether an Access application gates every path of `host`: see {@link accessAppCoverage}. */
 export function accessAppCovers(app: CfAccessApp, host: string): boolean {
-  return accessAppCoverage(app, host) !== null;
+  return specificity(app, host) >= 0;
 }
 
 /**
- * The application Access applies to `host` out of `apps`: one naming it exactly ahead of a
- * wildcard, as Access itself prefers the more specific. Undefined when none gates every path.
+ * The application Access applies to `host` out of `apps`: the one naming it most specifically, as
+ * Access itself prefers -- `host` exactly, else the wildcard matching the most of it. Undefined when
+ * none gates every path.
  */
 export function accessAppFor(apps: CfAccessApp[], host: string): CfAccessApp | undefined {
-  return apps.find((app) => accessAppCoverage(app, host) === "exact") ??
-    apps.find((app) => accessAppCoverage(app, host) === "wildcard");
+  let best: CfAccessApp | undefined;
+  let bestScore = -1;
+  for (const app of apps) {
+    const score = specificity(app, host);
+    if (score > bestScore) [best, bestScore] = [app, score];
+  }
+  return best;
 }
 
 /**

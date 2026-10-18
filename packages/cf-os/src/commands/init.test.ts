@@ -278,6 +278,23 @@ test("skips Access, with the setup link, when the account has no Zero Trust orga
   assert.match(stderr(), /cloudflare-one\/setup/);
 });
 
+test("offers a covering wildcard application, creating a dedicated one unless told to use it", async (t) => {
+  const wildcard = account({
+    "zero-trust access applications list": [{ name: "Corp", aud: "aud-corp", domain: "*.acme-sub.workers.dev" }],
+  });
+  const steps: Step[] = [
+    ["What are you setting up?", "new"],
+    ["Base name", "acme-os"],
+    ["Where will people reach it?", "workersDev"],
+    ...REST,
+  ];
+  const created = await init(t, [...steps, ['"Corp" covers acme-os.acme-sub.workers.dev with a wildcard', "create"], ["Deploy now?", false]], wildcard);
+  assert.equal(valueAtPath(created.written(), ["access", "audience"]), "aud-new");
+  const used = await init(t, [...steps, ['"Corp" covers acme-os.acme-sub.workers.dev with a wildcard', "reuse"], ["Deploy now?", false]], wildcard);
+  assert.equal(valueAtPath(used.written(), ["access", "audience"]), "aud-corp");
+  assert.match(used.stderr(), /Its policy, not access\.admins, decides who gets in/);
+});
+
 test("writes the other answers when Access fails, leaving it to cf-os access", async (t) => {
   const failures: Record<string, FakeReply>[] = [
     { "zero-trust access applications list": { fail: "[10000] Authentication error" } },

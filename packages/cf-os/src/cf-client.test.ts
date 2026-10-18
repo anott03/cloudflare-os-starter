@@ -143,6 +143,11 @@ test("knows which hostnames an Access application gates, and on which paths", ()
   assert.ok(!accessAppCovers(app, "os.example.com"));
   assert.equal(accessAppCoverage(app, "OS2.example.com"), "exact");
   assert.equal(accessAppCoverage(app, "pr-1.preview.example.com"), "wildcard");
+  // A `*` matches one label, as Access's does.
+  assert.ok(!accessAppCovers(app, "a.pr-1.preview.example.com"));
+  assert.ok(accessAppCovers({ domain: "*.*.example.com" }, "os.team.example.com"));
+  assert.ok(accessAppCovers({ domain: "os-*.example.com" }, "os-acme.example.com"));
+  assert.ok(!accessAppCovers({ domain: "os-*.example.com" }, "acme.example.com"));
   assert.ok(!accessAppCovers(app, "preview.example.com"));
   assert.ok(!accessAppCovers(app, "other.example.com"));
   assert.ok(!accessAppCovers({}, "os.example.com"));
@@ -157,6 +162,11 @@ test("picks the application Access applies: an exact hostname ahead of a wildcar
   assert.equal(accessAppFor([wildcard, exact], "os.example.com"), exact);
   assert.equal(accessAppFor([wildcard], "os.example.com"), wildcard);
   assert.equal(accessAppFor([{ domain: "os.example.com/admin" }], "os.example.com"), undefined);
+  // Between wildcards, the one matching more of the hostname, whichever comes first.
+  const team = { name: "t", domain: "*.team.example.com" };
+  const broad = { name: "b", domain: "*.*.example.com" };
+  assert.equal(accessAppFor([broad, team], "os.team.example.com"), team);
+  assert.equal(accessAppFor([team, broad], "os.team.example.com"), team);
 });
 
 test("pages zones too, and lists only the account's active ones", async () => {

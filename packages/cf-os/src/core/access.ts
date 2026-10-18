@@ -9,6 +9,7 @@ import {
   CfAuthError,
   CfError,
   CfUnavailableError,
+  accessAppCoverage,
   accessAppFor,
   issuerOf,
   type CfAccessApp,
@@ -106,9 +107,14 @@ export type AccessLookup =
   /** Access cannot work here yet: no organization, or one without a team domain. */
   | { kind: "no-organization"; reason: string }
   | { kind: "found"; issuer: string; app: CfAccessApp }
-  | { kind: "missing"; issuer: string };
+  /** None names the hostname itself. `wildcard`, when set, covers it, under its own policy. */
+  | { kind: "missing"; issuer: string; wildcard?: CfAccessApp };
 
-/** The account's issuer, and the application already covering `target.host` if there is one. */
+/**
+ * The account's issuer, and the application already naming `target.host` if there is one. A
+ * wildcard one covering it is only reported: its policy admits whoever it admits across the parent
+ * domain, which is wider than `target.admins`, so reusing it is the operator's choice to make.
+ */
 export async function lookupAccess(client: CloudflareClient, target: AccessTarget): Promise<AccessLookup> {
   let issuer: string | undefined;
   try {
@@ -130,7 +136,8 @@ export async function lookupAccess(client: CloudflareClient, target: AccessTarge
   // Every application, not a domain query: the API's matches the hostname exactly, which misses a
   // `*.<parent>` application already covering it.
   const app = accessAppFor((await client.listAccessApps(target.accountId)).filter((app) => app.aud), target.host);
-  return app ? { kind: "found", issuer, app } : { kind: "missing", issuer };
+  if (app && accessAppCoverage(app, target.host) === "exact") return { kind: "found", issuer, app };
+  return { kind: "missing", issuer, wildcard: app };
 }
 
 /** Creates the application for `target`, returning it with the edits that point the file at it. */
@@ -147,12 +154,14 @@ export async function createAccess(
 /** What {@link setupAccess} did. */
 export type SetupResult =
   | { kind: "reused"; app: CfAccessApp; edits: DeploymentEdit[] }
-  | { kind: "created"; app: CfAccessApp; edits: DeploymentEdit[] }
-  | { kind: "dry-run"; request: unknown; issuer: string };
+  /** `wildcard`: the wildcard application that covered the hostname too, which this one now overrides. */
+  | { kind: "created"; app: CfAccessApp; edits: DeploymentEdit[]; wildcard?: CfAccessApp }
+  | { kind: "dry-run"; request: unknown; issuer: string; wildcard?: CfAccessApp };
 
 /**
  * Finds or creates the application for `target`. Writes nothing; the caller applies `edits`. With
- * `dryRun`, a create is validated and returned as the request it would send.
+ * `dryRun`, a create is validated and returned as the request it would send. A wildcard application
+ * covering the hostname is not reused: the one created names it exactly, so Access applies it first.
  */
 export async function setupAccess(
   client: CloudflareClient,
@@ -166,9 +175,9 @@ export async function setupAccess(
   }
   if (dryRun) {
     const request = await client.dryRunCreateAccessApp(target.accountId, applicationBody(target));
-    return { kind: "dry-run", request, issuer: lookup.issuer };
+    return { kind: "dry-run", request, issuer: lookup.issuer, wildcard: lookup.wildcard };
   }
-  return { kind: "created", ...await createAccess(client, target, lookup.issuer) };
+  return { kind: "created", ...await createAccess(client, target, lookup.issuer), wildcard: lookup.wildcard };
 }
 
 /**

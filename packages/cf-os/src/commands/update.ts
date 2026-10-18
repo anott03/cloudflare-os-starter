@@ -112,7 +112,9 @@ function fetchUpstream(ctx: Context, deps: UpdateDeps, path: string, what: strin
 /**
  * The pin HEAD has once `target`'s `count` commits are merged, as git's merge decides it: the starter's,
  * unless the project moved its own pin since the two diverged and the starter did not (an earlier
- * `update --upstream`, committed). With nothing to merge, the project's own.
+ * `update --upstream`, committed), or both moved it and the project's descends from the starter's,
+ * which git fast-forwards to. With nothing to merge, the project's own. Both moved otherwise, the
+ * gitlink conflicts, and the starter's is the one offered.
  */
 function pinAfterMerge(
   ctx: Context, deps: UpdateDeps, path: string, target: string, count: number, oldPin: string, starterPin: string,
@@ -120,7 +122,12 @@ function pinAfterMerge(
   if (!count || starterPin === oldPin) return oldPin;
   const base = git(ctx, deps, ["merge-base", "HEAD", target]).stdout.trim();
   if (!base) return starterPin;
-  return git(ctx, deps, ["rev-parse", `${base}:${path}`]).stdout.trim() === starterPin ? oldPin : starterPin;
+  const basePin = git(ctx, deps, ["rev-parse", `${base}:${path}`]).stdout.trim();
+  if (basePin === starterPin) return oldPin;
+  if (basePin === oldPin) return starterPin;
+  const descends = (older: string, newer: string) =>
+    succeeded(git(ctx, deps, ["-C", path, "merge-base", "--is-ancestor", older, newer]));
+  return descends(basePin, starterPin) && descends(starterPin, oldPin) ? oldPin : starterPin;
 }
 
 /** What lies between two pins, as far as the submodule can see. */
@@ -220,6 +227,8 @@ interface Update {
   isStarter: boolean;
   /** The submodule's path in the repository. */
   path: string;
+  /** `--submodule`, when it was given. */
+  givenSubmodule: string | undefined;
   template: string;
   ref: string;
   oldHead: string;
@@ -298,10 +307,14 @@ function preconditions(ctx: Context, deps: UpdateDeps, path: string): { staleChe
   if (staleCheckout) {
     const head = git(ctx, deps, ["-C", path, "rev-parse", "HEAD"]).stdout.trim();
     const pin = git(ctx, deps, ["rev-parse", `HEAD:${path}`]).stdout.trim();
+    // Kept by the pin's history, by a ref of the submodule's, or by a gitlink any commit here records (a
+    // preview pin committed on another branch, fetched by URL into no ref of the submodule's).
     const kept = succeeded(git(ctx, deps, ["-C", path, "merge-base", "--is-ancestor", head, pin])) ||
-      git(ctx, deps, ["-C", path, "for-each-ref", "--contains", head, "--count=1"]).stdout.trim() !== "";
+      git(ctx, deps, ["-C", path, "for-each-ref", "--contains", head, "--count=1"]).stdout.trim() !== "" ||
+      git(ctx, deps, ["log", "--all", "--format=", "--raw", "--no-abbrev", "--", path]).stdout.split("\n")
+        .some((line) => line.split(" ")[3] === head);
     if (!kept) {
-      throw new Error(`${path} is checked out at ${short(head)}, which no branch or tag of it has, and updating ` +
+      throw new Error(`${path} is checked out at ${short(head)}, which nothing keeps (no branch or tag of it, and no commit here pins it), and updating ` +
         `would check out the pin instead. Keep it first (\`git -C ${path} branch <name> ${short(head)}\`), then run ` +
         "update again.");
     }
@@ -412,10 +425,23 @@ function rangeOf(ctx: Context, deps: UpdateDeps, state: Update): PinRange {
   return state.newPin === state.oldPin ? EMPTY_RANGE : pinRange(ctx, deps, state.path, state.oldPin, state.newPin);
 }
 
-/** This run's `update` again, for once the merge is concluded. `#796` as `pull/796`, which a shell reads whole. */
+/** `value` as one shell word: as it is when that is safe, else single-quoted. */
+function shellWord(value: string): string {
+  return /^[\w./:@-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * This run's `update` again, for once the merge is concluded, with the starter and submodule it was
+ * given. `#796` as `pull/796`, which a shell reads whole.
+ */
 function rerunCommand(state: Update): string {
   const to = state.to?.replace(/^#(\d+)$/, "pull/$1");
-  return `npx cf-os@latest update ${to ? `--to ${to}${state.preview ? " --preview" : ""}` : "--upstream"}`;
+  return ["npx cf-os@latest update",
+    ...state.template !== DEFAULT_TEMPLATE ? [`--template ${shellWord(state.template)}`] : [],
+    ...state.ref !== DEFAULT_REF ? [`--ref ${shellWord(state.ref)}`] : [],
+    ...state.givenSubmodule ? [`--submodule ${shellWord(state.givenSubmodule)}`] : [],
+    to ? `--to ${shellWord(to)}${state.preview ? " --preview" : ""}` : "--upstream",
+  ].join(" ");
 }
 
 /** With `--upstream` or `--to` and a merge left unfinished: the pin stays the merge's, with how to stage upstream's later. */
@@ -927,7 +953,8 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
   const starterLeftOut = replaced ? commits(ctx, deps, [mergedPin, `^${newPin}`, `^${oldPin}`], path) : [];
   const starterLeftOutContract = replaced ? commits(ctx, deps, [mergedPin, `^${newPin}`, `^${oldPin}`], path, CONTRACT) : [];
   const result: Update = {
-    isStarter, path, template, ref, oldHead, target, starter, oldPin, starterPin, mergedPin, newPin, upstream, to, ...range,
+    isStarter, path, givenSubmodule: args.values.submodule as string | undefined, template, ref, oldHead, target, starter,
+    oldPin, starterPin, mergedPin, newPin, upstream, to, ...range,
     starterLeftOut, starterLeftOutContract, preview: offMain,
     foreignUrl: url && !isUpstream(url) ? url : undefined, merge: "none", conflicts: [], staged: false, installable: existsSync(join(root, "package.json")), installed: false,
     problems: [],

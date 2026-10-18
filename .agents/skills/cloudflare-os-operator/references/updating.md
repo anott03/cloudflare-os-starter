@@ -69,7 +69,7 @@ Grep this repository for every path, package name and environment variable the u
 
 - Pin only commits on upstream's `main`, ideally with its CI green. If upstream `main` is broken (a bad lockfile, say), take the commit that fixes it. `update --to <commit>` pins a given commit on `main`, and refuses one that is not.
 - Several updates in a row, to pick up an upstream fix, are normal. A repository far behind can go in steps the same way, with `--to` an intermediate commit, so each migration stays small.
-- To preview an upstream branch or pull request in a merge request's preview deploy, `update --to <branch|#PR> --preview` stages it. Commit it on the merge request's branch only, and move the pin to the merged commit on `main` before merging. If the branch left `main` before the current pin, the brief lists what the preview leaves out: rebase the upstream branch rather than undo this repository's changes.
+- To preview an upstream branch or pull request in a merge request's preview deploy, `update --to <branch|pull/N> --preview` stages it. Commit it on the merge request's branch only, and move the pin to the merged commit on `main` before merging. If the branch left `main` before the current pin, the brief lists what the preview leaves out: rebase the upstream branch rather than undo this repository's changes.
 - Rolling back is `update --to <older commit>`: the brief lists the commits that leave and points at [upgrade-and-rollback.md](upgrade-and-rollback.md)'s Rollback Matrix.
 - Keep fixes in their own commits after the merge commit, so the update itself stays reviewable.
 - Finish with `pnpm lint` and `pnpm cf-os check`, or, outside a starter project, the repository's own lint, tests and build. Deploy only once the operator approves.

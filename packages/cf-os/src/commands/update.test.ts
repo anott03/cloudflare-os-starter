@@ -825,8 +825,57 @@ test("a submodule checked out at commits nothing else keeps is in the way: updat
       "git -C cloudflare-os for-each-ref --contains": { stdout: "" },
     },
   });
-  assert.match(String(code), /cloudflare-os is checked out at 9999999, which no branch or tag of it has[\s\S]*git -C cloudflare-os branch <name> 9999999/);
+  assert.match(String(code), /cloudflare-os is checked out at 9999999, which nothing keeps[\s\S]*git -C cloudflare-os branch <name> 9999999/);
   assert.ok(!commands().some((command) => command.includes(" fetch ")));
+});
+
+test("a submodule at a pin another branch here commits is kept by it: updating goes ahead", async (t) => {
+  const preview = "9".repeat(40);
+  const { code, commands } = await updating(t, {
+    replies: {
+      "git status --porcelain": { stdout: " M cloudflare-os\n" },
+      "git -C cloudflare-os rev-parse HEAD": { stdout: `${preview}\n` },
+      [`git -C cloudflare-os merge-base --is-ancestor ${preview}`]: { status: 1 },
+      "git -C cloudflare-os for-each-ref --contains": { stdout: "" },
+      // As git prints it: the preview branch's commit of the pin, then main's.
+      "git log --all --format= --raw --no-abbrev -- cloudflare-os": {
+        stdout: `:160000 160000 ${OLD_PIN} ${preview} M\tcloudflare-os\n:000000 160000 ${"0".repeat(40)} ${OLD_PIN} A\tcloudflare-os\n`,
+      },
+    },
+  });
+  assert.equal(code, 0);
+  assert.ok(commands().some((command) => command.startsWith("git merge ")));
+});
+
+test("both sides moved the pin, the project's past the starter's: git fast-forwards to it, and no move is reported", async (t) => {
+  const base = "1".repeat(40);
+  const replies: Replies = {
+    [`git merge-base HEAD ${TARGET}`]: { stdout: `${base}\n` },
+    // Neither side's pin is the one both had.
+    [`git rev-parse ${base}:cloudflare-os`]: { stdout: `${OLDER}\n` },
+  };
+  const { code, json, stderr } = await updating(t, { values: { "dry-run": true }, replies });
+  assert.equal(code, 0);
+  assert.deepEqual([pinOf(json).to, pinOf(json).moved], [OLD_PIN, false]);
+  assert.doesNotMatch(stderr(), /cloudflare-os: ccccccc →|roll/);
+  // Not descended from the starter's: the starter's is the one offered, as before.
+  const diverged = await updating(t, {
+    values: { "dry-run": true },
+    replies: { ...replies, [`git -C cloudflare-os merge-base --is-ancestor ${NEW_PIN} ${OLD_PIN}`]: { status: 1 } },
+  });
+  assert.deepEqual([pinOf(diverged.json).to, pinOf(diverged.json).moved], [NEW_PIN, true]);
+});
+
+test("the rerun command for a conflicted merge keeps the starter it merged, quoted for a shell", async (t) => {
+  const fork = mkdtempSync(join(tmpdir(), "cf-os fork "));
+  t.after(() => rmSync(fork, { recursive: true, force: true }));
+  const { json } = await updating(t, {
+    values: { template: fork, ref: "stable", upstream: true },
+    replies: { "git merge": { status: 1 }, "git diff --name-only --diff-filter=U": { stdout: "README.md\n" } },
+  });
+  const { problems } = json[0] as { problems: string[] };
+  assert.ok(problems.join("\n").includes(`run \`npx cf-os@latest update --template '${fork}' --ref stable --upstream\` again`),
+    problems.join("\n"));
 });
 
 test("--to a pin without some of the starter's pin's commits lists them: the merged starter code was adapted to them", async (t) => {

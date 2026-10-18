@@ -29,26 +29,28 @@ export async function verifyAccount(
   config: DeploymentConfig,
   origin: string,
 ): Promise<AccountCheck> {
-  // Signed out, or `cf` missing or broken: not the deployment's fault either way.
-  const unchecked = (error: unknown) => error instanceof CfAuthError || error instanceof CfUnavailableError;
-  let access: string[];
+  const problems: string[] = [];
   try {
-    access = await checkAccess(client, config, origin);
+    await checkAccess(client, config, origin, problems);
+    await checkStorage(client, config, problems);
+    return { problems };
   } catch (error) {
-    if (unchecked(error)) return { skipped: error.message };
-    throw error;
-  }
-  try {
-    return { problems: [...access, ...await checkStorage(client, config)] };
-  } catch (error) {
-    // A token that reads Access but not storage: what Access showed is still wrong.
-    if (unchecked(error)) return access.length ? { problems: access } : { skipped: error.message };
+    // Signed out, or `cf` missing or broken: not the deployment's fault either way. A token that
+    // reads some of the account but not the rest still showed that what it read is wrong.
+    if (error instanceof CfAuthError || error instanceof CfUnavailableError) {
+      return problems.length ? { problems } : { skipped: error.message };
+    }
     throw error;
   }
 }
 
-async function checkAccess(client: CloudflareClient, config: DeploymentConfig, origin: string): Promise<string[]> {
-  const problems: string[] = [];
+/** Pushes onto `problems` as it goes, so a later read that is not permitted keeps what was found. */
+async function checkAccess(
+  client: CloudflareClient,
+  config: DeploymentConfig,
+  origin: string,
+  problems: string[],
+): Promise<void> {
   const host = new URL(origin).host;
 
   let issuer: string | undefined;
@@ -86,11 +88,9 @@ async function checkAccess(client: CloudflareClient, config: DeploymentConfig, o
       "Requests would reach the Workshop without an Access token. Add the hostname, with no path, " +
       "to a self-hosted application, or point access.audience at the one that has it.");
   }
-  return problems;
 }
 
-async function checkStorage(client: CloudflareClient, config: DeploymentConfig): Promise<string[]> {
-  const problems: string[] = [];
+async function checkStorage(client: CloudflareClient, config: DeploymentConfig, problems: string[]): Promise<void> {
   const kvPaths = [
     ["context.kvNamespaceId", config.context.kvNamespaceId],
     ["resources.blueprintsKvNamespaceId", config.resources.blueprintsKvNamespaceId],
@@ -119,5 +119,4 @@ async function checkStorage(client: CloudflareClient, config: DeploymentConfig):
       `aiGateway.name: no AI Gateway named ${gateway.name} in account ${config.accountId}. The ` +
       "Workshop would advertise models whose every request fails.");
   }
-  return problems;
 }

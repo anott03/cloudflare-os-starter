@@ -41,7 +41,8 @@ const GLOBAL_OPTIONS = {
 
 const GLOBAL_HELP = [
   "  --config <path>    deployment file (default: deployment.jsonc in the project root)",
-  "  --account <id>     Cloudflare account, ahead of the file's accountId",
+  "  --account <id>     Cloudflare account for init and import, ahead of the file's accountId;",
+  "                     check, deploy and access refuse one other than the file's",
   "  --profile <name>   cf sign-in to use, passed to every cf call",
   "  -h, --help         this help",
 ];
@@ -134,7 +135,7 @@ const COMMANDS: Record<string, CommandSpec> = {
       "  --upstream             move Cloudflare OS on to upstream's main, staged and not committed, for review.",
       "                         Required outside a starter project, where only the pin moves",
       "  --to <ref>             as --upstream, but to this commit, tag or branch on upstream's main. One older",
-      "                         than the pin is a rollback; give its full SHA. #<n> is a pull request",
+      "                         than the pin is a rollback; give its full SHA. pull/<n> is a pull request",
       "  --preview              let --to pin an upstream branch or pull request that is not on main, for a",
       "                         merge request's preview deploy; move it to main before merging",
       "  --submodule <path>     the Cloudflare OS submodule (default: the one pointing at upstream)",

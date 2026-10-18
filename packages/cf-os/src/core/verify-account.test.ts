@@ -30,8 +30,8 @@ function matchingAccount(): MemoryAccount {
   };
 }
 
-async function problems(account: MemoryAccount, deployment = config): Promise<string[]> {
-  const result = await verifyAccount(memoryClient(account), deployment, origin);
+async function problems(account: MemoryAccount, deployment = config, at = origin): Promise<string[]> {
+  const result = await verifyAccount(memoryClient(account), deployment, at);
   assert.ok("problems" in result, `skipped: ${"skipped" in result ? result.skipped : ""}`);
   return result.problems;
 }
@@ -88,6 +88,16 @@ test("rejects a wildcard audience when a more specific application is the one Ac
   }), []);
 });
 
+test("rejects a wildcard application one level short of the router's hostname", async () => {
+  const found = await problems({
+    ...matchingAccount(),
+    accessApps: [{ name: "Wildcard", aud: "aud-1", domain: "*.example.com" }],
+  }, { ...config, workers: { ...config.workers, router: { name: "acme-os", route: { customDomain: "os.team.example.com" } } } } as DeploymentConfig,
+  "https://os.team.example.com");
+  assert.equal(found.length, 1);
+  assert.match(found[0], /"Wildcard" does not gate every path of os\.team\.example\.com/);
+});
+
 test("rejects an issuer from another team", async () => {
   const found = await problems({ ...matchingAccount(), organization: { auth_domain: "other.cloudflareaccess.com" } });
   assert.equal(found.length, 1);
@@ -140,6 +150,19 @@ test("keeps the Access problems it found when the storage reads are not permitte
   assert.ok("problems" in result);
   assert.equal(result.problems.length, 1);
   assert.match(result.problems[0], /no Access application/);
+  // Within each check too: the issuer before the applications, the KV IDs before the buckets.
+  const issuer = {
+    ...memoryClient({ ...matchingAccount(), organization: { auth_domain: "other.cloudflareaccess.com" } }),
+    listAccessApps: () => Promise.reject(new CfAuthError("[10000] Authentication error")),
+  } satisfies CloudflareClient;
+  const kept = await verifyAccount(issuer, config, origin);
+  assert.ok("problems" in kept && /team domain is/.test(kept.problems[0]));
+  const kv = {
+    ...memoryClient({ ...matchingAccount(), kvNamespaces: [] }),
+    listR2Buckets: () => Promise.reject(new CfAuthError("[10000] Authentication error")),
+  } satisfies CloudflareClient;
+  const kvKept = await verifyAccount(kv, config, origin);
+  assert.ok("problems" in kvKept && /context\.kvNamespaceId/.test(kvKept.problems[0]));
   // Nothing found before it: skipped, as for a token that reads nothing.
   const clean = { ...memoryClient(matchingAccount()), listKvNamespaces: client.listKvNamespaces } satisfies CloudflareClient;
   assert.ok("skipped" in await verifyAccount(clean, config, origin));

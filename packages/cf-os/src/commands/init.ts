@@ -234,11 +234,25 @@ async function accessEditsFor(session: Session, client: CloudflareClient, target
     ctx.out.log(`Reusing Access application "${found.app.name}", which already covers ${target.host}.`);
     return accessEdits(found.issuer, found.app);
   }
-  const choice = await prompter.select(`No Access application covers ${target.host} yet.`, [
-    { value: "create" as const, label: "Create the application now", hint: `admits ${target.admins.join(", ")}` },
+  const { wildcard } = found;
+  const choice = await prompter.select(wildcard
+    ? `Access application "${wildcard.name}" covers ${target.host} with a wildcard, under a policy of its own.`
+    : `No Access application covers ${target.host} yet.`, [
+    {
+      value: "create" as const,
+      label: wildcard ? `Create one for ${target.host}` : "Create the application now",
+      hint: `admits ${target.admins.join(", ")}${wildcard ? `, ahead of "${wildcard.name}"` : ""}`,
+    },
+    ...wildcard
+      ? [{ value: "reuse" as const, label: `Use "${wildcard.name}"`, hint: "its policy decides who gets in" }]
+      : [],
     { value: "skip" as const, label: "Skip", hint: "run `pnpm cf-os access` later" },
   ]);
   if (choice === "skip") return [];
+  if (choice === "reuse" && wildcard) {
+    ctx.out.log(`Using Access application "${wildcard.name}". Its policy, not access.admins, decides who gets in.`);
+    return accessEdits(found.issuer, wildcard);
+  }
   const created = await createAccess(client, target, found.issuer);
   ctx.out.log(`Created Access application "${created.app.name}". To admit more people, edit its policy in ` +
     "the Zero Trust dashboard: Access > Applications.");
