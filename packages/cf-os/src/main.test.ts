@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { cli, type CliDeps } from "./main.ts";
@@ -149,6 +149,35 @@ function importsOf(file: string): { static: string[]; dynamic: string[] } {
     dynamic: [...source.matchAll(/\bimport\("([^"]+)"\)/g)].map((match) => match[1]),
   };
 }
+
+/** Every module reachable from `entries` by static imports alone, and the packages they import. */
+function staticClosure(entries: string[]): { files: Set<string>; packages: Set<string> } {
+  const files = new Set<string>();
+  const packages = new Set<string>();
+  const queue = [...entries];
+  while (queue.length) {
+    const file = queue.pop()!;
+    if (files.has(file)) continue;
+    files.add(file);
+    for (const specifier of importsOf(file).static) {
+      if (specifier.startsWith(".")) queue.push(resolve(dirname(file), specifier));
+      else packages.add(specifier);
+    }
+  }
+  return { files, packages };
+}
+
+test("the packed path never reaches @gadgets/scripts", () => {
+  // A published copy runs dispatch, delegation and scaffolding only, and lacks the `link:` package.
+  const { files, packages } = staticClosure([MAIN, join(SRC, "commands", "scaffold.ts")]);
+  const reached = [...packages].filter((name) => name.startsWith("@gadgets/"));
+  assert.deepEqual(reached, [], `reachable from ${[...files].map((file) => relative(SRC, file)).join(", ")}`);
+  // And it really is lazy: no command module is pulled in statically. Slashes, for Windows paths.
+  assert.deepEqual([...files].map((file) => relative(SRC, file).replaceAll("\\", "/"))
+    .filter((file) => file.startsWith("commands/")),
+    ["commands/scaffold.ts"]);
+  assert.deepEqual([...packages].filter((name) => !name.startsWith("node:")), ["@clack/prompts"]);
+});
 
 test("the core is pure: no CLI shell, no cf subprocess, no prompts", () => {
   const core = join(SRC, "core");

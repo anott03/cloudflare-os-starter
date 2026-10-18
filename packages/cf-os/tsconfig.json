@@ -1,6 +1,7 @@
 // Type-checks the CLI. Nothing here is compiled for the repository's own use: the `cf-os` bin is
 // `src/main.ts`, which `node` runs directly, stripping the types. `erasableSyntaxOnly` is what keeps
-// that a guarantee rather than a hope.
+// that a guarantee rather than a hope. `tsconfig.build.json` is the compile, for the packed tarball
+// only.
 //
 // Checked by this package's `build` task, which `pnpm lint` and `pnpm build` run.
 {

@@ -32,4 +32,4 @@ Questions are asked only when stdin and stdout are both terminals and `CI` is un
 
 ## A global `cf-os`
 
-Installed globally, `cf-os` only scaffolds. Inside a project it hands every command to the project's own copy, so the deploy logic matches the `cloudflare-os` version the project pins, the way a global `cf` defers to a project-local one.
+Installed globally (`npm i -g cf-os`), `cf-os` only scaffolds. Inside a project it hands every command to the project's own copy, so the deploy logic matches the `cloudflare-os` version the project pins, the way a global `cf` defers to a project-local one.
