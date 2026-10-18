@@ -70,7 +70,7 @@ test("prints usage and fails on no command or an unknown one", async (t) => {
 
 test("prints each command's help on stdout, anywhere", async (t) => {
   const cwd = tempDir(t);
-  for (const name of ["init", "import", "access", "check", "deploy", "install"]) {
+  for (const name of ["init", "import", "access", "check", "deploy", "update", "install"]) {
     const { code, stdout } = await run(t, [name, "--help"], { cwd });
     assert.equal(code, 0, name);
     assert.match(stdout, new RegExp(`^Usage: cf-os ${name}\\b`), name);
@@ -81,13 +81,18 @@ test("prints each command's help on stdout, anywhere", async (t) => {
   assert.match(stdout, /Commands:\n {2}init/);
 });
 
-test("outside a project, only init runs", async (t) => {
+test("outside a project, only init and update run", async (t) => {
   const cwd = tempDir(t);
   for (const name of ["import", "access", "check", "deploy", "install"]) {
     const { code, log } = await run(t, [name], { cwd });
     assert.equal(code, 1, name);
     assert.match(log, /Run `cf-os init <dir>` to create one/, name);
   }
+  // update moves the pin of any repository that has one, so it is the command that refuses here.
+  const updated = await run(t, ["update", "--upstream"], { cwd });
+  assert.equal(updated.code, 1);
+  assert.match(updated.log, /Update failed\. .* is not a git checkout/);
+  assert.doesNotMatch(updated.log, /Not in a Cloudflare OS project/);
   // init scaffolds -- which, with no terminal, needs the directory.
   const { code, log } = await run(t, ["init"], { cwd });
   assert.equal(code, 1);
@@ -113,6 +118,15 @@ test("hands off to a copy at packages/cfos, where projects from before the renam
   assert.deepEqual(spawned.map((entry) => entry.args), [[legacy, "check"]]);
 });
 
+test("runs update in the copy that was started, even with the project's own present", async (t) => {
+  const { root } = projectWithLocalCopy(t);
+  // A scratch project is no git checkout, so the update itself stops at once -- here, not in a child.
+  const { code, log, spawned } = await run(t, ["update", "--dry-run"], { cwd: root });
+  assert.deepEqual(spawned, []);
+  assert.equal(code, 1);
+  assert.match(log, /Update failed\. .* is not a git checkout/);
+});
+
 test("does not delegate to itself, or from a delegated child", async (t) => {
   const { root, local } = projectWithLocalCopy(t);
   const itself = await run(t, ["install", "--check"], { cwd: root, self: local });
@@ -126,7 +140,7 @@ test("refuses a project that predates the CLI rather than run commands for it", 
   const root = scratchProject(t, TEMPLATE);
   const { code, log, spawned } = await run(t, ["check"], { cwd: root });
   assert.equal(code, 1);
-  assert.match(log, /predates the cf-os CLI/);
+  assert.match(log, /predates the cf-os CLI\. Bring it up to date with `npx cf-os@latest update`/);
   assert.deepEqual(spawned, []);
 });
 
@@ -168,14 +182,15 @@ function staticClosure(entries: string[]): { files: Set<string>; packages: Set<s
 }
 
 test("the packed path never reaches @gadgets/scripts", () => {
-  // A published copy runs dispatch, delegation and scaffolding only, and lacks the `link:` package.
-  const { files, packages } = staticClosure([MAIN, join(SRC, "commands", "scaffold.ts")]);
+  // A published copy runs dispatch, delegation, scaffolding and update only, and lacks the `link:`
+  // package.
+  const { files, packages } = staticClosure([MAIN, join(SRC, "commands", "scaffold.ts"), join(SRC, "commands", "update.ts")]);
   const reached = [...packages].filter((name) => name.startsWith("@gadgets/"));
   assert.deepEqual(reached, [], `reachable from ${[...files].map((file) => relative(SRC, file)).join(", ")}`);
   // And it really is lazy: no command module is pulled in statically. Slashes, for Windows paths.
   assert.deepEqual([...files].map((file) => relative(SRC, file).replaceAll("\\", "/"))
-    .filter((file) => file.startsWith("commands/")),
-    ["commands/scaffold.ts"]);
+    .filter((file) => file.startsWith("commands/")).toSorted(),
+    ["commands/scaffold.ts", "commands/update.ts"]);
   assert.deepEqual([...packages].filter((name) => !name.startsWith("node:")), ["@clack/prompts"]);
 });
 

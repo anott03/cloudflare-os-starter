@@ -71,7 +71,7 @@ pnpm install
 pnpm cf-os init
 ```
 
-`deployment.jsonc` belongs in your repository once it is filled in. A fork of this public repository has to stay public, so for a private one, create an empty private repository and push the clone there: `git remote rename origin starter`, `git remote add origin <url>`, `git push -u origin HEAD`. `git pull starter main` then brings in starter updates.
+`deployment.jsonc` belongs in your repository once it is filled in. A fork of this public repository has to stay public, so for a private one, create an empty private repository and push the clone there: `git remote rename origin starter`, `git remote add origin <url>`, `git push -u origin HEAD`. `npx cf-os@latest update` then brings in starter updates.
 
 If you have not cloned it yet, one command does all of that:
 
@@ -153,7 +153,8 @@ The complete control reference and recipes live in [Customization](docs/customiz
 - Stream production events with [`wrangler tail`](https://developers.cloudflare.com/workers/observability/logs/real-time-logs/).
 - Triage explicit failures and choose export destinations with the [observability guide](docs/observability.md).
 - Roll a Worker back from its dashboard deployment history or with [`wrangler rollback`](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
-- Follow the [upgrade checklist](docs/customization.md#upgrade) before changing the pinned submodule.
+- Bring the project up to date with `npx cf-os@latest update`. It merges the starter's `main`, checks the `cloudflare-os` submodule out at the starter's reviewed pin, installs, and writes `.cf-os/update.md` for your coding agent: what changed, any conflicts (git leaves them for you), and how to finish. Then run `pnpm cf-os check` and `pnpm cf-os deploy`.
+- Follow the [upgrade checklist](docs/customization.md#upgrade) before moving the pinned submodule past the starter's (`npx cf-os@latest update --upstream` stages upstream's `main` for that review).
 - Review the upstream Cloudflare OS documentation and release history before adopting behavior changes.
 
 ### Moving here from the hosted deploy (os.cloudflare.app/deploy)

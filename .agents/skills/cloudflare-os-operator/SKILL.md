@@ -56,7 +56,7 @@ Confirm them against the checkout before running them (`pnpm cf-os --help` lists
 Against the account, the commands split as follows:
 
 - **Read-only:** `pnpm cf-os import`, `pnpm cf-os check`, `pnpm cf-os access --dry-run`, and `pnpm exec cf ... list`/`get`. They suit the inventory step.
-- **Local writes only:** `pnpm cf-os import --out <path>` writes a local file (pointed at `deployment.jsonc`, it edits that in place), so treat it like any other edit to approved configuration.
+- **Local writes only:** `pnpm cf-os import --out <path>` writes a local file (pointed at `deployment.jsonc`, it edits that in place), so treat it like any other edit to approved configuration. `npx cf-os@latest update` merges the starter's `main` (a git merge, left conflicted if it conflicts), checks the submodule out at the starter's pin, runs `pnpm install`, and writes `.cf-os/update.md`; follow that brief and [references/updating.md](references/updating.md). Its `--upstream` stages an unreviewed pin, which needs the upgrade gate in [references/upgrade-and-rollback.md](references/upgrade-and-rollback.md) before it is committed.
 - **Mutating:** `pnpm cf-os access` without `--dry-run` can create an Access application. `pnpm cf-os init` reads the account and writes `deployment.jsonc`, but its Access step can create an Access application and a One-time PIN identity provider when the operator chooses to, and once the file is complete it offers to run `pnpm cf-os deploy`. Outside a project, `cf-os init <dir>` can also create a private GitHub repository and push to it. `pnpm cf-os deploy` deploys every Worker without asking for confirmation. Each needs approval like any other remote mutation.
 
 `pnpm cf-os init` is interactive and refuses without a terminal. Agents should use `import`, `access`, direct edits to `deployment.jsonc` and an approved `pnpm cf-os deploy` instead, which take every answer as a flag or from the file.
@@ -82,6 +82,7 @@ Choose one mode before acting:
 - **Evaluation:** a non-production deployment, usually on an explicitly protected `workers.dev` hostname.
 - **Production:** a custom domain and production data or users.
 - **Incident:** restore safety and service while preserving evidence.
+- **Update:** merge the starter's latest, and with it the starter's pin, with `npx cf-os@latest update`. Follow [references/updating.md](references/updating.md).
 - **Upgrade:** move the pinned `cloudflare-os` gitlink to a reviewed commit.
 
 Also classify the deployment as a first deploy, continuation of an existing deployment, or replacement. If this is unclear, remain read-only.
@@ -374,4 +375,4 @@ Rollback is a coordinated system operation, not one command. Read [references/up
 
 ## Pinned Submodule Upgrade
 
-Never advance the submodule blindly. Read and follow [references/upgrade-and-rollback.md](references/upgrade-and-rollback.md). An evaluation worktree prevents local file races but is not staging isolation; use separate Worker identities, route, storage, bindings, and data. Stop for specialist review before any migration, deleted/renamed Durable Object class, irreversible data change, auth boundary change, or incompatible RPC change.
+Never advance the submodule blindly. Taking the starter's pin with `npx cf-os@latest update` is the reviewed path: follow the brief it writes and [references/updating.md](references/updating.md). Moving past it, by `update --upstream` or by hand, is an upgrade: read and follow [references/upgrade-and-rollback.md](references/upgrade-and-rollback.md), and [references/updating.md](references/updating.md) for what an upstream range usually needs here. An evaluation worktree prevents local file races but is not staging isolation; use separate Worker identities, route, storage, bindings, and data. Stop for specialist review before any migration, deleted/renamed Durable Object class, irreversible data change, auth boundary change, or incompatible RPC change.

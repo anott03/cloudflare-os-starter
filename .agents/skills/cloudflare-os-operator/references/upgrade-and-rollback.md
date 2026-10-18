@@ -12,6 +12,8 @@ Never advance the `cloudflare-os` submodule to a moving branch or an assumed lat
 4. Keep the parent and submodule worktrees clean except for the intentional gitlink/wrapper compatibility changes.
 5. Retain the old gitlink, configs, Worker deployment IDs, resource identities, and compatibility notes.
 
+`npx cf-os@latest update --upstream` selects upstream `main`'s exact SHA as the target, checks it out and stages it without committing. That is step 2's selection only: the rest of this gate, and the compatibility review below, still apply before the pin is committed. The brief it writes (`.cf-os/update.md`) records the old and new SHAs and the commit range for steps 1 and 3. [updating.md](updating.md) lists what an upstream range usually needs in this repository.
+
 If using a mirror, prove the exact commit exists without changing the active checkout first. Use a temporary clone or fetch the exact full SHA from the approved mirror where supported, inspect the commit object, and compare it to the intended source. Do not alter `.gitmodules` or check out a nearby branch head as a test.
 
 ## Compatibility Review

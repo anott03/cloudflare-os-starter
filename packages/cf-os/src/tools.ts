@@ -10,7 +10,7 @@ export type SpawnTool = (
   command: string,
   args: string[],
   options: { cwd: string; capture: boolean; env?: NodeJS.ProcessEnv },
-) => { status: number | null; stdout: string; error?: Error };
+) => { status: number | null; stdout: string; stderr?: string; error?: Error };
 
 /** Whether a tool ran and exited 0. */
 export function succeeded(result: ReturnType<SpawnTool>): boolean {
@@ -30,6 +30,6 @@ export function defaultSpawn(): SpawnTool {
       // in `cwd`, not argv.
       shell: process.platform === "win32" && command === "pnpm",
     });
-    return { status: result.status, stdout: result.stdout ?? "", error: result.error };
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "", error: result.error };
   };
 }

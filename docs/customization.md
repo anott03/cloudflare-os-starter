@@ -209,6 +209,10 @@ Prefer wrapper-owned Workers and [service bindings](https://developers.cloudflar
 
 ## Upgrade
 
+`npx cf-os@latest update` brings the project up to date with the starter: it merges the starter's `main` (fetched from its URL, so no remote is needed), checks the submodule out at the pin that merge brings, runs `pnpm install`, and writes `.cf-os/update.md`. The brief lists both commit ranges and any conflicts, which git leaves in place, and gives a coding agent the steps to finish and summarise the update, starting from [the operator skill's updating guide](../.agents/skills/cloudflare-os-operator/references/updating.md). The starter's pin has already been reviewed against the starter, so for that path the list below is a check on your own customisations. `--dry-run` lists what would be merged, and `git reset --keep <old HEAD>` (the brief names it) undoes it.
+
+Moving the submodule past the starter's pin is a review of its own. `npx cf-os@latest update --upstream` picks upstream's `main` as the target and stages it without committing; or check out the commit by hand. Then:
+
 1. Record the current `cloudflare-os` gitlink for rollback.
 2. Update the submodule to the intended upstream commit.
 3. Review the Wrangler base-config changes for the Workshop, router and the three ambient Gatekeepers (Context, Scheduler, Web Search), along with the Gatekeeper contracts. `pnpm lint` catches one class of drift for you: `packages/cf-os/src/core/deployment-config.ts` reuses upstream's `WranglerConfig`, so a changed key there is a type error, not a silently dropped one. A newly preinstalled Gatekeeper (`PREINSTALL` in `cloudflare-os/scripts/release/manifest-lib.ts`) needs a Worker and bindings in `packages/cf-os/src/core/deployment.ts`, and a row in the naming table in `core/naming.ts`, to keep the starter on the hosted topology.

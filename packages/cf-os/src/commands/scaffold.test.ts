@@ -82,7 +82,7 @@ test("clones with the submodule, renames origin, installs, and stops without a t
   ]);
   assert.deepEqual(ran.slice(3).map((entry) => entry.cwd), [target, target]);
   assert.deepEqual(configured, [], "configured without a terminal to ask at");
-  assert.match(stderr(), /git pull starter main/);
+  assert.match(stderr(), /npx cf-os@latest update/);
   assert.match(stderr(), /\n {2}cd my-os\n {2}gh repo create <owner>\/my-os --private --source \. --remote origin --push\n {2}pnpm cf-os init$/);
   assert.ok(!commands().some((command) => command.startsWith("gh ")), "ran gh without a terminal");
 });

@@ -1,7 +1,7 @@
 // `cf-os init [<dir>] [--template <git-url|path>] [--ref <branch|tag>]`, outside a project
 //
 // Creates a project: clones the starter with its history and its `cloudflare-os` submodule, renames
-// `origin` to `starter` (so starter updates arrive with `git pull starter main`), installs, offers
+// `origin` to `starter` (leaving `origin` for the project's own repository), installs, offers
 // to create a private GitHub repository for it with `gh` and push there, then hands over to the new
 // project's own `cf-os init` to configure and deploy it. Without a terminal it stops after the
 // install and prints the next commands.
@@ -22,6 +22,9 @@ import { defaultSpawn, succeeded, type SpawnTool } from "../tools.ts";
 
 /** The starter `init` clones by default. */
 export const DEFAULT_TEMPLATE = "https://github.com/cloudflare/cloudflare-os-starter";
+
+/** Cloudflare OS itself, which the starter pins as its `cloudflare-os` submodule. */
+export const UPSTREAM = "https://github.com/cloudflare/cloudflare-os";
 
 /** The directory offered when none is given. */
 export const DEFAULT_DIR = "cloudflare-os";
@@ -164,7 +167,7 @@ async function offerRepository(ctx: Context, deps: ScaffoldDeps, target: string)
     return;
   }
   ctx.out.log(`\nPushed the project to https://github.com/${name}, its origin remote. Starter updates still ` +
-    "arrive with `git pull starter main`.");
+    "arrive with `npx cf-os@latest update`.");
 }
 
 /** Creates a project from `args`, resolving to the exit code. */
@@ -195,7 +198,7 @@ export async function scaffold(args: CommandArgs, ctx: Context, deps: ScaffoldDe
 
   const rename = deps.spawn("git", ["remote", "rename", "origin", "starter"], { cwd: target, capture: true });
   if (rename.error || rename.status !== 0) throw new Error("Could not rename the origin remote to starter.");
-  ctx.out.log("\nThe starter is the `starter` remote: `git pull starter main` brings in its updates.\n");
+  ctx.out.log("\nThe starter is the `starter` remote. `npx cf-os@latest update` brings in its updates.\n");
 
   const install = deps.spawn("pnpm", ["install"], { cwd: target, capture: false });
   if (install.error || install.status !== 0) {

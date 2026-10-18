@@ -2,14 +2,18 @@
 
 // cf-os: scaffold, configure and deploy a self-hosted Cloudflare OS.
 //
-// This file is the dispatcher, and the only part a globally installed `cf-os` ever runs for itself.
-// Inside a project it hands every command to that project's own copy (`packages/cf-os`), the way a
-// global `cf` hands off to a project-local one, so the deploy logic always matches the project's
-// pinned `cloudflare-os`. Outside a project, only `init` runs: it scaffolds one.
+// This file is the dispatcher, and with scaffolding and `update` the only part a globally installed
+// `cf-os` ever runs for itself.
+// Inside a project it hands every command but `update` to that project's own copy
+// (`packages/cf-os`), the way a global `cf` hands off to a project-local one, so the deploy logic
+// always matches the project's pinned `cloudflare-os`. `update` runs here, as it is what brings that
+// copy up to date. Outside a project, only `init` and `update` run: `init` scaffolds one, and
+// `update` moves the Cloudflare OS pin of any repository that has one.
 //
 // Commands load lazily. `install` has to work before the submodule is checked out, and the
 // `@gadgets/scripts` modules other commands import only resolve once it is -- so nothing imported
-// statically here, or by `commands/scaffold.ts`, may reach them. `main.test.ts` checks that.
+// statically here, or by `commands/scaffold.ts` or `commands/update.ts`, may reach them.
+// `main.test.ts` checks that.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
@@ -51,6 +55,13 @@ interface CommandSpec {
   positionals: number;
   /** Printed before a failure's message. */
   failure: string;
+  /**
+   * False when the command runs in the copy that was started rather than being handed to the
+   * project's own: `update`, which replaces that copy, and is missing from projects older than it.
+   */
+  delegates?: false;
+  /** True when the command also runs outside a Cloudflare OS project. */
+  anywhere?: true;
   /** The module to run. `inProject` is false only for `init`, which then scaffolds. */
   load(inProject: boolean): Promise<CommandModule>;
 }
@@ -68,6 +79,7 @@ const COMMANDS: Record<string, CommandSpec> = {
     options: { out: { type: "string" }, template: { type: "string" }, ref: { type: "string" } },
     positionals: 1,
     failure: "Init failed.",
+    anywhere: true,
     load: (inProject) => inProject ? import("./commands/init.ts") : import("./commands/scaffold.ts"),
   },
   import: {
@@ -109,6 +121,34 @@ const COMMANDS: Record<string, CommandSpec> = {
     positionals: 0,
     failure: "Deploy failed.",
     load: () => import("./commands/deploy.ts"),
+  },
+  update: {
+    summary: "bring this repository up to date with the starter, or move its Cloudflare OS pin, and write a " +
+      "brief for your coding agent",
+    synopsis: "[--ref <branch>] [--template <git-url|path>] [--upstream] [--to <ref> [--preview]] [--submodule <path>] " +
+      "[--dry-run]",
+    help: [
+      "  --ref <branch>         starter branch to merge (default: main)",
+      "  --template <url|path>  starter to fetch it from (default: https://github.com/cloudflare/cloudflare-os-starter)",
+      "  --upstream             move Cloudflare OS on to upstream's main, staged and not committed, for review.",
+      "                         Required outside a starter project, where only the pin moves",
+      "  --to <ref>             as --upstream, but to this commit, tag or branch on upstream's main. One older",
+      "                         than the pin is a rollback; give its full SHA. #<n> is a pull request",
+      "  --preview              let --to pin an upstream branch or pull request that is not on main, for a",
+      "                         merge request's preview deploy; move it to main before merging",
+      "  --submodule <path>     the Cloudflare OS submodule (default: the one pointing at upstream)",
+      "  --dry-run              list what would be merged; merge, check out and write nothing",
+    ],
+    options: {
+      ref: { type: "string" }, template: { type: "string" }, upstream: { type: "boolean" }, to: { type: "string" }, preview: { type: "boolean" },
+      submodule: { type: "string" },
+      "dry-run": { type: "boolean" },
+    },
+    positionals: 0,
+    failure: "Update failed.",
+    delegates: false,
+    anywhere: true,
+    load: () => import("./commands/update.ts"),
   },
   install: {
     summary: "install the cloudflare-os submodule's own workspace",
@@ -220,17 +260,17 @@ export async function cli(argv: string[], deps: CliDeps): Promise<number> {
   }
 
   const root = findProjectRoot(deps.cwd);
-  if (root && !deps.env[DELEGATION_SENTINEL]) {
+  if (root && spec.delegates !== false && !deps.env[DELEGATION_SENTINEL]) {
     const local = localEntry(root);
     if (existsSync(local) && !samePath(local, deps.self)) return delegate(local, argv, deps);
     if (!existsSync(local)) {
       deps.out.log(
-        `${root} has no packages/cf-os to hand off to: it predates the cf-os CLI. Update it from the ` +
-        "starter (`git pull starter main`), or use the scripts in its own package.json.");
+        `${root} has no packages/cf-os to hand off to: it predates the cf-os CLI. Bring it up to date ` +
+        "with `npx cf-os@latest update`, or use the scripts in its own package.json.");
       return 1;
     }
   }
-  if (!root && name !== "init") {
+  if (!root && !spec.anywhere) {
     deps.out.log(
       "Not in a Cloudflare OS project: no directory here or above holds deployment.jsonc beside " +
       "cloudflare-os/. Run `cf-os init <dir>` to create one.");
