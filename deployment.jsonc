@@ -46,7 +46,9 @@
 
   // This starter deploys Cloudflare Access mode. Cloudflare OS also supports built-in password
   // accounts and auth Gatekeeper sign-in; see the reference below before switching. The audience
-  // comes from the self-hosted Access application protecting the public hostname.
+  // comes from the self-hosted Access application protecting the public hostname: `pnpm cf-os init`
+  // sets it all up, or set "admins" and `pnpm cf-os access` finds or creates that application and
+  // fills in issuer and audience.
   // "admins" gates /admin in every sign-in method.
   // Reference: docs/customization.md#sign-in-methods
   "access": {

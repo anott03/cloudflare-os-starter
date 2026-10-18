@@ -21,21 +21,21 @@ Audit the old-to-new change for:
 - Authentication and authorization behavior.
 - Shared RPC APIs and Gatekeeper contracts.
 - Durable Object classes, migration tags, and storage schemas.
-- Workshop, Router, and Gatekeeper Wrangler base configs, including any Gatekeeper newly added to upstream's `PREINSTALL` (`cloudflare-os/scripts/release/manifest-lib.ts`). The starter deploys every preinstalled Gatekeeper to stay on the hosted topology, so a new one needs a Worker and bindings in `scripts/deploy.ts`.
+- Workshop, Router, and Gatekeeper Wrangler base configs, including any Gatekeeper newly added to upstream's `PREINSTALL` (`cloudflare-os/scripts/release/manifest-lib.ts`). The starter deploys every preinstalled Gatekeeper to stay on the hosted topology, so a new one needs a Worker and bindings in `packages/cf-os/src/core/deployment.ts`, and a row in the naming table in `core/naming.ts`.
 - Required vars, secrets, service bindings, KV, R2, assets, compatibility flags, and migrations.
 - AI transport, providers, billing, and logging.
 - Error reporting and frontend reporting.
 - Dependencies, lockfiles, build commands, and generated artifacts.
 - The submodule's `capnweb`, `typescript` and `@cloudflare/workers-types` catalog versions, and its build scripts vs Vite+ tasks.
 
-Inspect every base-config section that `scripts/deploy.ts` replaces or reconstructs. New upstream fields can otherwise be silently dropped. Generate and review sanitized old/new derived-config diffs, but never commit or hand-edit generated Wrangler files.
+Inspect every base-config section that `generateConfigs()` (`packages/cf-os/src/core/deployment.ts`) replaces or reconstructs. New upstream fields can otherwise be silently dropped. Generate and review sanitized old/new derived-config diffs, but never commit or hand-edit generated Wrangler files.
 
 Two of those deserve their own step, because both fail quietly:
 
 - **Types across the `link:` boundary.** The starter's packages depend on the submodule's (`@gadgets/workshop-shared`, `@gadgets/error-reporting`, `@gadgets/scripts`) through `link:`, not as workspace members. So the submodule's dependencies come from its own lockfile, and the starter's catalog does not govern them. Only the versions whose types cross the link have to agree: `capnweb`, `typescript` and `@cloudflare/workers-types`. A differing `capnweb` resolves a second copy, and a stub minted by one copy is unserialisable by the other's session. A deduped dev machine hides that, while the two separate installs in CI do not. Compare those three with `cloudflare-os/pnpm-workspace.yaml` as part of the gitlink change.
-- **Build scripts becoming Vite+ tasks.** `scripts/deploy.ts` reaches every build through `vp run --no-cache <task>`, which runs scripts and tasks alike, because `pnpm --filter` cannot see a task. If an upstream package converts its `build` script to a task, or its `build` script starts spawning a nested cached `vp run` of its own, check that `buildCommands()` still rebuilds from source rather than replaying an archived artifact. `scripts/deploy.test.ts` asserts the flag but cannot see a nested invocation.
+- **Build scripts becoming Vite+ tasks.** `buildCommands()` (`packages/cf-os/src/core/deployment.ts`) reaches every build through `vp run --no-cache <task>`, which runs scripts and tasks alike, because `pnpm --filter` cannot see a task. If an upstream package converts its `build` script to a task, or its `build` script starts spawning a nested cached `vp run` of its own, check that `buildCommands()` still rebuilds from source rather than replaying an archived artifact. `packages/cf-os/src/core/deployment.test.ts` asserts the flag but cannot see a nested invocation.
 
-Update only the gitlink unless a specific reviewed wrapper compatibility change is required. Run `pnpm install`. Its `postinstall` (`scripts/install-submodule.ts`) reinstalls `cloudflare-os/` from the submodule's lockfile (frozen), and `optimisticRepeatInstall: false` makes it run even though the starter's own lockfile is unchanged. Then run `pnpm lint`, `pnpm check`, plus the relevant upstream tests and type checks. Every build, test and deploy entry point runs `node scripts/install-submodule.ts --check` first, so a skipped hook stops them with the fix rather than a missing-module error.
+Update only the gitlink unless a specific reviewed wrapper compatibility change is required. Run `pnpm install`. Its `postinstall` (`cf-os install`) reinstalls `cloudflare-os/` from the submodule's lockfile (frozen), and `optimisticRepeatInstall: false` makes it run even though the starter's own lockfile is unchanged. Then run `pnpm lint`, `pnpm cf-os check`, plus the relevant upstream tests and type checks. Every build, test and deploy entry point runs `cf-os install --check` first, so a skipped hook stops them with the fix rather than a missing-module error.
 
 ## Migration Plan
 

@@ -1,7 +1,7 @@
 packages:
   - packages/*
   # Nothing under `cloudflare-os/`: this repository's packages `link:` to the submodule's, whose
-  # dependencies come from cloudflare-os/pnpm-lock.yaml (`pnpm install:submodule`). Neither this
+  # dependencies come from cloudflare-os/pnpm-lock.yaml (`cf-os install`). Neither this
   # lockfile nor the catalog below governs them, and this root's `vp` has none of their tasks.
 
 # The toolchain versions this repository's own packages share. Declared once here so a bump is one

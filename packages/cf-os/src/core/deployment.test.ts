@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import { parse, type ParseError } from "jsonc-parser";
-import { aiGatewayPlan, buildCommands, generateConfigs, validateConfig } from "./deploy.ts";
+import {
+  aiGatewayPlan,
+  buildCommands,
+  deployOrder,
+  deployWaves,
+  generateConfigs,
+  PACKAGE_DIRS,
+  PlaceholderError,
+  validateConfig,
+} from "./deployment.ts";
 import type {
   BaseConfigs,
   DeploymentConfig,
@@ -66,27 +76,22 @@ function variant(mutate: (config: Record<string, any>) => void): DeploymentConfi
   return config as DeploymentConfig;
 }
 
-// Read from disk rather than inlined, including the Error Reporter's: deploy.ts derives every
-// generated config from these files, so a copy here could drift from what actually ships.
+// Read from disk rather than inlined, including the Error Reporter's: the deploy derives every
+// generated config from these files, so a copy here could drift from what actually ships. Paths are
+// from the repository root, where the test task runs.
 async function baseConfigs(): Promise<BaseConfigs> {
-  return {
-    router: await baseConfig("../cloudflare-os/packages/router/wrangler.jsonc"),
-    workshop: await baseConfig("../cloudflare-os/packages/workshop-backend/wrangler.jsonc"),
-    context: await baseConfig("../cloudflare-os/packages/gatekeeper-context/wrangler.jsonc"),
-    scheduler: await baseConfig("../cloudflare-os/packages/gatekeeper-scheduler/wrangler.jsonc"),
-    websearch: await baseConfig("../cloudflare-os/packages/gatekeeper-websearch/wrangler.jsonc"),
-    customGatekeeper: await baseConfig("../packages/custom-gatekeeper/wrangler.jsonc"),
-    errorReporter: await baseConfig("../packages/error-reporter/wrangler.jsonc"),
-  };
+  const entries = await Promise.all(Object.entries(PACKAGE_DIRS).map(async ([key, dir]) =>
+    [key, await baseConfig(join(dir, "wrangler.jsonc"))] as const));
+  return Object.fromEntries(entries) as unknown as BaseConfigs;
 }
 
-// Parsed the way `deploy.ts` parses it, errors included. Swallowing them would let a base config
+// Parsed the way `cf-os deploy` parses it, errors included. Swallowing them would let a base config
 // that the deploy cannot read still pass these tests on a best-effort parse -- which is how the
 // Scheduler's trailing commas hid: nine parse errors, and a config object that still looked usable.
 async function baseConfig(path: string): Promise<ProdWranglerConfig> {
   const errors: ParseError[] = [];
   const result = parse(
-    await readFile(new URL(path, import.meta.url), "utf8"),
+    await readFile(path, "utf8"),
     errors,
     { allowTrailingComma: true },
   ) as ProdWranglerConfig;
@@ -319,7 +324,7 @@ test("deploys the ambient Scheduler Gatekeeper the hosted flow preinstalls", asy
   assert.equal(generated.scheduler.kv_namespaces, undefined);
   assert.equal(generated.scheduler.secrets, undefined);
 
-  const builds = buildCommands(validConfig)
+  const builds = buildCommands(validConfig).flat()
     .map(({ args }) => args)
     .filter((args) => args.includes("@gadgets/gatekeeper-scheduler"));
   assert.deepEqual(builds.map((args) => args.at(-1)), ["build:app", "build"]);
@@ -363,7 +368,7 @@ test("deploys the ambient Web Search Gatekeeper the hosted flow preinstalls", as
   assert.equal(elsewhere.websearch.vars, undefined);
 
   // Built, and so type-checked, with the rest.
-  const builds = buildCommands(validConfig).map(({ args }) => args);
+  const builds = buildCommands(validConfig).flat().map(({ args }) => args);
   assert.deepEqual(
     builds.filter((args) => args.includes("@gadgets/gatekeeper-websearch")).map((args) => args.at(-1)),
     ["build"]);
@@ -626,7 +631,7 @@ test("generates binding-only storage for automatic provisioning", async () => {
  * zero and each still deploy.
  */
 test("never lets a deploy replay a cached build artifact", () => {
-  const commands = buildCommands(validConfig);
+  const commands = buildCommands(validConfig).flat();
   assert.ok(commands.length > 0, "expected at least one build command");
   for (const { args } of commands) {
     const command = args.join(" ");
@@ -648,7 +653,7 @@ test("rebuilds the Context configurator app rather than replaying it", () => {
   // `gatekeeper-context`'s `build` script spawns `vp run --cache build:app` of its own, which the
   // outer --no-cache does not reach. Without this step a deploy ships whatever app.txt the cache
   // last archived.
-  const context = buildCommands(validConfig)
+  const context = buildCommands(validConfig).flat()
     .map(({ args }) => args)
     .filter((args) => args.includes("@gadgets/gatekeeper-context"));
   assert.deepEqual(context.map((args) => args.at(-1)), ["build:app", "build"]);
@@ -656,24 +661,74 @@ test("rebuilds the Context configurator app rather than replaying it", () => {
 });
 
 test("passes VITE_CF_ACCESS_MODE explicitly rather than inheriting it", () => {
-  const withAccessMode = buildCommands(validConfig).filter(({ env }) => env);
+  const withAccessMode = buildCommands(validConfig).flat().filter(({ env }) => env);
   assert.deepEqual(withAccessMode.map(({ env }) => env), [{ VITE_CF_ACCESS_MODE: "true" }]);
   // It has to reach the frontend, which inlines it into the bundle, and nothing else.
   assert.match(withAccessMode[0].args.join(" "), /@gadgets\/workshop-frontend/);
 });
 
-test("builds the frontend before the router", () => {
-  const order = buildCommands(validConfig).map(({ args }) => args.join(" "));
-  const frontend = order.findIndex((command) => command.includes("workshop-frontend"));
-  const router = order.findIndex((command) => command.includes("@gadgets/router"));
-  // The router deploy picks up ../workshop-frontend/dist as its assets.
-  assert.ok(frontend >= 0 && router >= 0 && frontend < router, order.join("\n"));
+test("builds what depends on itself in order, and everything else independently", () => {
+  const chains = buildCommands(validConfig).map((chain) => chain.map(({ args }) => args.join(" ")));
+  // Each nested `build:app` pair stays one chain, in order: `build` replays what `build:app` wrote.
+  for (const pkg of ["@gadgets/gatekeeper-context", "@gadgets/gatekeeper-scheduler"]) {
+    const chain = chains.find((commands) => commands.some((command) => command.includes(pkg)));
+    assert.deepEqual(chain?.map((command) => command.split(" ").at(-1)), ["build:app", "build"], pkg);
+  }
+  // Every other package is a chain of its own.
+  assert.deepEqual(chains.map((chain) => chain.length), [2, 2, 1, 1, 1, 1, 1, 1]);
+  // The frontend and the router included: it is the router's deploy, not its build, that reads
+  // ../workshop-frontend/dist, and every build finishes before anything deploys.
+  const frontend = chains.findIndex((chain) => chain.some((command) => command.includes("workshop-frontend")));
+  const router = chains.findIndex((chain) => chain.some((command) => command.includes("@gadgets/router")));
+  assert.ok(frontend >= 0 && router >= 0 && frontend !== router, chains.join("\n"));
 });
 
 test("skips the Error Reporter build when error reporting is disabled", () => {
   const config = variant((c) => {
     c.errorReporting = { enabled: false, environment: "<ENVIRONMENT>", release: null };
   });
-  const commands = buildCommands(config).map(({ args }) => args.join(" "));
+  const commands = buildCommands(config).flat().map(({ args }) => args.join(" "));
   assert.equal(commands.some((command) => command.includes("error-reporter")), false);
+});
+
+test("tells an unconfigured file apart from a wrong one", () => {
+  assert.throws(() => validateConfig(variant((config) => { config.accountId = "<CLOUDFLARE_ACCOUNT_ID>"; })),
+    PlaceholderError);
+  assert.throws(() => validateConfig(variant((config) => { config.accountId = "nope"; })),
+    (error: unknown) => error instanceof Error && !(error instanceof PlaceholderError));
+});
+
+test("deploys the Gatekeepers together, then the Workshop, then the router", () => {
+  assert.deepEqual(deployWaves(validConfig),
+    [["errorReporter", "context", "scheduler", "websearch", "customGatekeeper"], ["workshop"], ["router"]]);
+  assert.deepEqual(deployWaves(variant((config) => { config.errorReporting.enabled = false; })),
+    [["context", "scheduler", "websearch", "customGatekeeper"], ["workshop"], ["router"]]);
+});
+
+test("deploys every Worker after each one it binds", async () => {
+  // Derived from the generated service bindings, so a binding added upstream fails here rather than
+  // at a deploy the Workers API rejects for naming a script that does not exist yet.
+  for (const config of [validConfig, variant((c) => { c.errorReporting.enabled = false; })]) {
+    const generated = generateConfigs(config, await baseConfigs());
+    const waves = deployWaves(config);
+    const waveOf = new Map(waves.flatMap((wave, index) => wave.map((key) => [generated[key]!.name, index] as const)));
+    for (const [index, wave] of waves.entries()) {
+      for (const key of wave) {
+        for (const { service } of generated[key]!.services ?? []) {
+          assert.ok(waveOf.has(service), `${key} binds ${service}, which no wave deploys`);
+          assert.ok(waveOf.get(service)! < index, `${key} binds ${service}, which deploys in wave ${waveOf.get(service)}`);
+        }
+      }
+    }
+  }
+});
+
+test("deploys every Worker before the router that binds them", () => {
+  assert.deepEqual(deployOrder(validConfig), deployWaves(validConfig).flat());
+  assert.deepEqual(deployOrder(validConfig),
+    ["errorReporter", "context", "scheduler", "websearch", "customGatekeeper", "workshop", "router"]);
+  assert.deepEqual(deployOrder(variant((config) => { config.errorReporting.enabled = false; })),
+    ["context", "scheduler", "websearch", "customGatekeeper", "workshop", "router"]);
+  // Every package the deploy reads a base config from is deployed, and nothing else.
+  assert.deepEqual(new Set(deployOrder(validConfig)), new Set(Object.keys(PACKAGE_DIRS)));
 });

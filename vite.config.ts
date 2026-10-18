@@ -25,7 +25,7 @@ export default defineConfig({
     jsPlugins: ['./cloudflare-os/scripts/oxlint-plugin.ts'],
     options: {
       // Type-aware linting is intentionally off, as upstream. `tsc` is what enforces type safety
-      // here: `pnpm types:scripts` for the deploy tooling and `pnpm build` for the packages.
+      // here, through each package's `build` task (`pnpm build`), the `cf-os` CLI's included.
       typeAware: false,
     },
     env: {
@@ -80,7 +80,8 @@ export default defineConfig({
     ],
     overrides: [
       {
-        // Cloudflare Workers backends: worker/service-worker global scope.
+        // Cloudflare Workers backends: worker/service-worker global scope. `packages/cf-os` is a Node
+        // CLI and is overridden back below.
         files: ['packages/*/src/**/*.ts'],
         env: {
           serviceworker: true,
@@ -104,17 +105,20 @@ export default defineConfig({
         },
       },
       {
-        files: ['scripts/**/*.ts'],
+        // The `cf-os` CLI runs under Node, not in a Worker. Ordered after the `packages/*/src/**`
+        // override above so this env wins over its service-worker one.
+        files: ['packages/cf-os/**/*.ts'],
         env: {
+          serviceworker: false,
           node: true,
           es2024: true,
         },
       },
       {
-        // `scripts/` tests run under `node --test`, not vitest, so they must not pick up the vitest
+        // The CLI's tests run under `node --test`, not vitest, so they must not pick up the vitest
         // override above (which would supply vitest globals and drop `env: node`). Ordered last so
         // it wins over that entry.
-        files: ['scripts/**/*.test.ts'],
+        files: ['packages/cf-os/**/*.test.ts'],
         plugins: ['typescript', 'unicorn', 'oxc', 'import'],
         env: {
           node: true,

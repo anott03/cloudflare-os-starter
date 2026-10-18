@@ -8,9 +8,9 @@ import test from "node:test";
 import {
   INSTALL_MARKER, INSTALL_SCRIPT, NOT_CHECKED_OUT, SUBMODULE_INSTALL_ARGS, check, clearWorkspaceState,
   install, type SpawnInstall,
-} from "./install-submodule.ts";
+} from "./install.ts";
 
-// Run from the repo root, as the root `test` script does.
+// Run from the repo root, as this package's `test` task does.
 
 function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -48,7 +48,7 @@ function dependencies(manifest: Record<string, unknown>): [string, string][] {
 
 /** A temporary repo root with a checked-out `cloudflare-os/` holding `lockfile`. */
 function fixtureRoot(t: { after: (fn: () => void) => void }, lockfile = "lockfileVersion: '9.0'\n"): string {
-  const root = mkdtempSync(join(tmpdir(), "install-submodule-root-"));
+  const root = mkdtempSync(join(tmpdir(), "cf-os-install-root-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, "cloudflare-os", "node_modules"), { recursive: true });
   writeFileSync(join(root, "cloudflare-os", "package.json"), "{}");
@@ -57,27 +57,44 @@ function fixtureRoot(t: { after: (fn: () => void) => void }, lockfile = "lockfil
 }
 
 const NOT_CHECKED_OUT_MESSAGE =
-  "install-submodule: cloudflare-os/ is empty, so the submodule is not checked out. Every package " +
-  "here links into it. Run `git submodule update --init`, then `pnpm install:submodule`.";
+  "cf-os install: cloudflare-os/ is empty, so the submodule is not checked out. Every package " +
+  "here links into it. Run `git submodule update --init`, then `pnpm cf-os install`.";
 
 function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-test("the root postinstall installs the submodule's workspace through this script", () => {
+test("the root postinstall installs the submodule's workspace through this command", () => {
   const root = readJson("package.json");
   assert.ok(isRecord(root) && isRecord(root.scripts));
-  assert.equal(root.scripts.postinstall, "node scripts/install-submodule.ts");
-  assert.equal(root.scripts["install:submodule"], "node scripts/install-submodule.ts");
+  assert.equal(root.scripts.postinstall, "cf-os install");
+  // The old name, kept for habits and docs.
+  assert.equal(root.scripts["install:submodule"], "cf-os install");
 });
 
-test("the fix every message names runs this script through a root script", async (t) => {
-  assert.equal(INSTALL_SCRIPT, "install:submodule");
+test("no workspace script single-quotes an argument", () => {
+  // pnpm runs scripts through cmd.exe on Windows, which keeps single quotes as part of the word:
+  // `--filter '!cloudflare-os-starter'` reached vp quotes and all, and matched no package. Double
+  // quotes, escaped in the JSON, mean the same to sh and cmd.exe.
+  for (const [dir, manifest] of memberManifests()) {
+    if (!isRecord(manifest.scripts)) continue;
+    for (const [name, script] of Object.entries(manifest.scripts)) {
+      assert.doesNotMatch(String(script), /'/, `${join(dir, "package.json")} scripts.${name}`);
+    }
+  }
+});
+
+test("the fix every message names runs this command through a root script", async (t) => {
+  const root = readJson("package.json");
+  assert.ok(isRecord(root) && isRecord(root.scripts));
+  assert.equal(INSTALL_SCRIPT, "cf-os install");
+  // `pnpm cf-os install` resolves through the root `cf-os` script to this package's bin.
+  assert.equal(root.scripts["cf-os"], "cf-os");
 
   const uninstalled = fixtureRoot(t);
   const stale = fixtureRoot(t);
   writeFileSync(join(stale, "cloudflare-os", INSTALL_MARKER), JSON.stringify({ lockfileSha256: sha256("other") }));
-  const empty = mkdtempSync(join(tmpdir(), "install-submodule-root-"));
+  const empty = mkdtempSync(join(tmpdir(), "cf-os-install-root-"));
   t.after(() => rmSync(empty, { recursive: true, force: true }));
   const messages = [NOT_CHECKED_OUT];
   for (const result of [check({ root: uninstalled }), check({ root: stale }), check({ root: empty })]) {
@@ -100,8 +117,8 @@ test("the submodule's install never rewrites the submodule's lockfile", () => {
   assert.deepEqual(SUBMODULE_INSTALL_ARGS, ["--dir", "cloudflare-os", "install", "--frozen-lockfile"]);
 });
 
-test("the script imports only node builtins before the submodule is known to be there", () => {
-  const source = readFileSync("scripts/install-submodule.ts", "utf8");
+test("the command imports only node builtins before the submodule is known to be there", () => {
+  const source = readFileSync("packages/cf-os/src/commands/install.ts", "utf8");
   // `import type` erases under `verbatimModuleSyntax`, so it loads nothing.
   const staticImports = [...source.matchAll(/^import\b(?!\s+type\b)[^;]*?from\s+"([^"]+)"/gm)].map(match => match[1]);
   assert.ok(staticImports.length > 0);
@@ -112,7 +129,7 @@ test("the script imports only node builtins before the submodule is known to be 
 });
 
 test("clearWorkspaceState removes pnpm's state files and nothing else", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "install-submodule-"));
+  const dir = mkdtempSync(join(tmpdir(), "cf-os-install-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const name of [".pnpm-workspace-state-v1.json", ".pnpm-workspace-state.json", ".modules.yaml"]) {
     writeFileSync(join(dir, name), "{}");
@@ -135,7 +152,6 @@ test("install clears the submodule's workspace state before it spawns its instal
     spawns.push({ args, cwd: options.cwd, stateFileThere: existsSync(stateFile) });
     return { status: 0 };
   };
-  t.mock.method(console, "error", () => {});
   assert.equal(await install({ root, spawn }), 0);
   assert.equal(spawns.length, 1);
   const [only] = spawns;
@@ -145,7 +161,7 @@ test("install clears the submodule's workspace state before it spawns its instal
 });
 
 test("install passes on the install's failure and stops before it without the submodule", async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "install-submodule-root-"));
+  const root = mkdtempSync(join(tmpdir(), "cf-os-install-root-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   let spawned = 0;
   const spawn: SpawnInstall = () => {
@@ -156,6 +172,7 @@ test("install passes on the install's failure and stops before it without the su
   assert.equal(await install({ root, spawn }), 1);
   assert.equal(spawned, 0, "it ran the submodule's install with no submodule checked out");
   assert.deepEqual(errors.mock.calls.map(call => call.arguments), [[NOT_CHECKED_OUT_MESSAGE]]);
+  errors.mock.restore();
 
   mkdirSync(join(root, "cloudflare-os"));
   writeFileSync(join(root, "cloudflare-os", "package.json"), "{}");
@@ -168,7 +185,6 @@ test("install records the submodule's lockfile once its install succeeds, and on
   const lockfile = "lockfileVersion: '9.0'\nimporters: {}\n";
   const root = fixtureRoot(t, lockfile);
   const marker = join(root, "cloudflare-os", INSTALL_MARKER);
-  t.mock.method(console, "error", () => {});
 
   let markerDuringInstall: boolean | undefined;
   assert.equal(await install({ root, spawn: () => {
@@ -192,10 +208,9 @@ test("install records the submodule's lockfile once its install succeeds, and on
 });
 
 test("check names the cause and the fix for every way the submodule's install can be out of step", async (t) => {
-  const fix = "Run `pnpm install:submodule`.";
-  t.mock.method(console, "error", () => {});
+  const fix = "Run `pnpm cf-os install`.";
 
-  const empty = mkdtempSync(join(tmpdir(), "install-submodule-root-"));
+  const empty = mkdtempSync(join(tmpdir(), "cf-os-install-root-"));
   t.after(() => rmSync(empty, { recursive: true, force: true }));
   mkdirSync(join(empty, "cloudflare-os"));
   assert.deepEqual(check({ root: empty }), { ok: false, message: NOT_CHECKED_OUT_MESSAGE });
@@ -204,7 +219,7 @@ test("check names the cause and the fix for every way the submodule's install ca
   const marker = join(root, "cloudflare-os", INSTALL_MARKER);
   const notInstalled = {
     ok: false,
-    message: `install-submodule: the submodule's workspace is not installed (no readable cloudflare-os/${INSTALL_MARKER}). ${fix}`,
+    message: `cf-os install: the submodule's workspace is not installed (no readable cloudflare-os/${INSTALL_MARKER}). ${fix}`,
   };
   assert.deepEqual(check({ root }), notInstalled);
   for (const unreadable of ["", "{", "null", "[]", "{}", '{"lockfileSha256":7}']) {
@@ -219,7 +234,7 @@ test("check names the cause and the fix for every way the submodule's install ca
   writeFileSync(join(root, "cloudflare-os", "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n# bumped\n");
   const changed = {
     ok: false,
-    message: "install-submodule: cloudflare-os/pnpm-lock.yaml has changed since the submodule's workspace was " +
+    message: "cf-os install: cloudflare-os/pnpm-lock.yaml has changed since the submodule's workspace was " +
       `installed, so cloudflare-os/node_modules is stale. ${fix}`,
   };
   assert.deepEqual(check({ root }), changed);
@@ -228,16 +243,30 @@ test("check names the cause and the fix for every way the submodule's install ca
 });
 
 test("the root entry points that need the submodule's install check it first", () => {
-  // `&&` chains, not `pre` scripts, which `ignore-scripts` also skips.
+  // `&&` chains, not `pre` scripts, which `ignore-scripts` also skips. `check` and `deploy` reach it
+  // through `requireSubmodule()` in commands/deploy.ts instead.
   const root = readJson("package.json");
   assert.ok(isRecord(root) && isRecord(root.scripts));
-  const CHECK = "node scripts/install-submodule.ts --check && ";
-  for (const name of ["build", "test", "check", "deploy"]) {
+  const CHECK = "cf-os install --check && ";
+  for (const name of ["build", "test"]) {
     const script: unknown = root.scripts[name];
     assert.ok(typeof script === "string" && script.startsWith(CHECK), `${name} does not check the submodule's install first`);
   }
   // The one that reaches the check through the others.
-  assert.match(String(root.scripts.lint), /pnpm run build/);
+  assert.match(String(root.scripts.lint), /pnpm run lint:check && pnpm run build/);
+  assert.equal(root.scripts.check, "cf-os check");
+  assert.equal(root.scripts.deploy, "cf-os deploy");
+  const deploy = readFileSync("packages/cf-os/src/commands/deploy.ts", "utf8");
+  assert.ok(deploy.includes("from \"./install.ts\""), "commands/deploy.ts does not run the check");
+});
+
+test("the root's cf is the one cf-os runs", () => {
+  // The root keeps `cf` so `pnpm exec cf auth login`, which every hint names, works there.
+  const root = readJson("package.json");
+  const cli = readJson("packages/cf-os/package.json");
+  assert.ok(isRecord(root) && isRecord(root.devDependencies) && isRecord(cli) && isRecord(cli.dependencies));
+  assert.equal(root.devDependencies.cf, cli.dependencies.cf);
+  assert.match(String(cli.dependencies.cf), /^\d/, "cf is pinned exactly, not ranged");
 });
 
 test("no submodule package is a workspace member; packages here link to the ones they use", () => {
