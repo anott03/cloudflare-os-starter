@@ -41,7 +41,7 @@ Secrets are never valid values in this file. Install them interactively with Wra
 
 ### Workers and routing
 
-The deployment is six Workers. Keep their names unique: service bindings use these names, so update and deploy them together.
+The deployment is seven Workers. Keep their names unique: service bindings use these names, so update and deploy them together.
 
 | Worker | Role |
 | --- | --- |
@@ -49,12 +49,13 @@ The deployment is six Workers. Keep their names unique: service bindings use the
 | `workshop` | The Cloudflare OS backend, holding all user data in Durable Objects. |
 | `context` | The Context Gatekeeper. |
 | `scheduler` | The Scheduler Gatekeeper, which gives agents scheduled and recurring work. |
+| `websearch` | The Web Search Gatekeeper, which lets agents search the public web. |
 | `customGatekeeper` | This repository's example integration. |
 | `errorReporter` | The private explicit-issue destination. |
 
-Context and Scheduler are *ambient*: upstream's release marks both `PREINSTALL`, so the hosted flow installs them on every instance and this starter deploys them for the same reason. Neither takes configuration beyond its name — the Scheduler takes none at all.
+Context, Scheduler and Web Search are *ambient*: upstream's release marks all three `PREINSTALL`, so the hosted flow installs them on every instance and this starter deploys them for the same reason. None takes configuration beyond its name. Web Search runs on its own Workers AI binding and searches through the account's `default` AI Gateway. That gateway is fixed upstream and is independent of `aiGateway.name`. Cloudflare creates it on first use.
 
-Only the router takes a route; the other five are reachable only over service bindings, and the deploy turns off `workers.dev` and [Preview URLs](https://developers.cloudflare.com/workers/configuration/previews/) on all six. That keeps the router the single Access-protected way in.
+Only the router takes a route; the other six are reachable only over service bindings, and the deploy turns off `workers.dev` and [Preview URLs](https://developers.cloudflare.com/workers/configuration/previews/) on all seven. That keeps the router the single Access-protected way in.
 
 For production, set a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) on it:
 
@@ -208,10 +209,10 @@ Prefer wrapper-owned Workers and [service bindings](https://developers.cloudflar
 
 1. Record the current `cloudflare-os` gitlink for rollback.
 2. Update the submodule to the intended upstream commit.
-3. Review Workshop and Context Wrangler base-config changes and Gatekeeper contracts.
-4. Diff `cloudflare-os/pnpm-workspace.yaml`'s `catalog:` against this repository's and re-sync it. Two submodule packages are members of this workspace and resolve `catalog:` here, so a missing entry fails the install and a *stale* one silently gives the tree two copies of `capnweb` — a failure that only appears once the two installs are separate, as they are in CI.
-5. Run `pnpm install`, `pnpm --dir cloudflare-os install`, `pnpm lint`, and `pnpm check`.
-6. Deploy and verify Access, administrator access, storage, configured AI, Context, custom observations, and the Error Reporter query surface.
+3. Review the Wrangler base-config changes for the Workshop, router and the three ambient Gatekeepers (Context, Scheduler, Web Search), along with the Gatekeeper contracts. `pnpm lint` catches one class of drift for you: `scripts/deployment-config.ts` reuses upstream's `WranglerConfig`, so a changed key there is a type error, not a silently dropped one. A newly preinstalled Gatekeeper (`PREINSTALL` in `cloudflare-os/scripts/release/manifest-lib.ts`) needs a Worker and bindings in `scripts/deploy.ts` to keep the starter on the hosted topology.
+4. Compare three entries of `cloudflare-os/pnpm-workspace.yaml`'s `catalog:` with this repository's: `capnweb`, `typescript` and `@cloudflare/workers-types`. Only those three have to match. The packages here `link:` to the submodule's rather than sharing a workspace with them. So the submodule's dependencies come from its own lockfile, and this catalog does not govern them. Types still cross the link, though, and a differing `capnweb` gives the tree two copies of it, which fails only once the two installs are separate, as they are in CI.
+5. Run `pnpm install`, then `pnpm lint` and `pnpm check`. The root `postinstall` (`scripts/install-submodule.ts`) reinstalls the submodule's workspace from its lockfile. `optimisticRepeatInstall: false` makes it run even when this repository's own lockfile has not changed, which is what a gitlink bump looks like from here. If the hook was skipped (`--ignore-scripts`), every build, test and deploy entry point stops and tells you to run `pnpm install:submodule`.
+6. Deploy and verify Access, administrator access, storage, configured AI, Context, Scheduler, Web Search, custom observations, and the Error Reporter query surface.
 7. If needed, restore the previous gitlink and redeploy, or use [Workers rollback](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/) when bindings remain compatible.
 
 Do not update the submodule blindly. The deployment script derives from upstream configs so incompatible base changes remain visible during review and checks.

@@ -18,6 +18,7 @@ const validConfig: DeploymentConfig = {
     workshop: { name: "acme-cloudflare-os-backend" },
     context: { name: "acme-cloudflare-os-context" },
     scheduler: { name: "acme-cloudflare-os-scheduler" },
+    websearch: { name: "acme-cloudflare-os-websearch" },
     customGatekeeper: { name: "acme-cloudflare-os-custom" },
     errorReporter: { name: "acme-cloudflare-os-errors" },
   },
@@ -73,6 +74,7 @@ async function baseConfigs(): Promise<BaseConfigs> {
     workshop: await baseConfig("../cloudflare-os/packages/workshop-backend/wrangler.jsonc"),
     context: await baseConfig("../cloudflare-os/packages/gatekeeper-context/wrangler.jsonc"),
     scheduler: await baseConfig("../cloudflare-os/packages/gatekeeper-scheduler/wrangler.jsonc"),
+    websearch: await baseConfig("../cloudflare-os/packages/gatekeeper-websearch/wrangler.jsonc"),
     customGatekeeper: await baseConfig("../packages/custom-gatekeeper/wrangler.jsonc"),
     errorReporter: await baseConfig("../packages/error-reporter/wrangler.jsonc"),
   };
@@ -221,6 +223,11 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
       entrypoint: "GatekeeperVendor",
     },
     {
+      binding: "GATEKEEPER_WEBSEARCH",
+      service: "acme-cloudflare-os-websearch",
+      entrypoint: "GatekeeperVendor",
+    },
+    {
       binding: "GATEKEEPER_CUSTOM",
       service: "acme-cloudflare-os-custom",
       entrypoint: "GatekeeperVendor",
@@ -261,12 +268,13 @@ test("gives the router the public route, the frontend, and every service binding
   assert.equal(generated.router.name, "acme-cloudflare-os");
   assert.equal(generated.router.workers_dev, false);
   assert.deepEqual(generated.router.routes, [{ pattern: "os.example.com", custom_domain: true }]);
-  // No entrypoint on any of the three: the router forwards whole HTTP requests rather than making
+  // No entrypoint on any of them: the router forwards whole HTTP requests rather than making
   // vendor RPC calls, and the binding name is what selects the /gatekeeper/<name> path.
   assert.deepEqual(generated.router.services, [
     { binding: "WORKSHOP_BACKEND", service: "acme-cloudflare-os-backend" },
     { binding: "GATEKEEPER_CONTEXT", service: "acme-cloudflare-os-context" },
     { binding: "GATEKEEPER_SCHEDULER", service: "acme-cloudflare-os-scheduler" },
+    { binding: "GATEKEEPER_WEBSEARCH", service: "acme-cloudflare-os-websearch" },
     { binding: "GATEKEEPER_CUSTOM", service: "acme-cloudflare-os-custom" },
   ]);
   // Inherited untouched: the base config already carries the ASSETS binding, the SPA fallback, and
@@ -315,6 +323,53 @@ test("deploys the ambient Scheduler Gatekeeper the hosted flow preinstalls", asy
     .map(({ args }) => args)
     .filter((args) => args.includes("@gadgets/gatekeeper-scheduler"));
   assert.deepEqual(builds.map((args) => args.at(-1)), ["build:app", "build"]);
+});
+
+/**
+ * The third ambient Gatekeeper the hosted flow preinstalls (`PREINSTALL` again). Skipping it would
+ * leave a migrated instance's users without the search their blueprints call, and a fresh install
+ * one capability short of the hosted topology.
+ */
+test("deploys the ambient Web Search Gatekeeper the hosted flow preinstalls", async () => {
+  const bases = await baseConfigs();
+  const generated = generateConfigs(validConfig, bases);
+
+  assert.equal(generated.websearch.name, "acme-cloudflare-os-websearch");
+  assert.deepEqual(
+    generated.workshop.services!.find((service) => service.binding === "GATEKEEPER_WEBSEARCH"),
+    {
+      binding: "GATEKEEPER_WEBSEARCH",
+      service: "acme-cloudflare-os-websearch",
+      entrypoint: "GatekeeperVendor",
+    });
+  assert.deepEqual(
+    generated.router.services!.find((service) => service.binding === "GATEKEEPER_WEBSEARCH"),
+    { binding: "GATEKEEPER_WEBSEARCH", service: "acme-cloudflare-os-websearch" });
+
+  // Carried verbatim from upstream: the Workers AI binding the search runs on, the rule that bundles
+  // its agent-facing types as text, and the Durable Object history of its workspace facet.
+  assert.deepEqual(generated.websearch.ai, bases.websearch.ai);
+  assert.equal(generated.websearch.ai!.binding, "AI");
+  assert.deepEqual(generated.websearch.rules, bases.websearch.rules);
+  assert.deepEqual(generated.websearch.migrations, bases.websearch.migrations);
+  assert.ok(generated.websearch.migrations!.length > 0, "websearch lost its DO migrations");
+  assert.equal(generated.websearch.vars, undefined);
+  assert.equal(generated.websearch.secrets, undefined);
+
+  // Deployed before the Workshop, which binds it; type-checked before deploying.
+  const builds = buildCommands(validConfig).map(({ args }) => args);
+  assert.deepEqual(
+    builds.filter((args) => args.includes("@gadgets/gatekeeper-websearch")).map((args) => args.at(-1)),
+    ["build"]);
+});
+
+test("rejects a Web Search Worker name shared with another Worker", () => {
+  assert.throws(
+    () => validateConfig(variant((c) => { c.workers.websearch.name = c.workers.scheduler.name; })),
+    /unique/i);
+  assert.throws(
+    () => validateConfig(variant((c) => { delete c.workers.websearch; })),
+    /Missing required deployment value: workers.websearch.name/);
 });
 
 test("keeps every Worker behind the router off the public internet", async () => {

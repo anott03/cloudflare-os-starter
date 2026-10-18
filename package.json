@@ -7,14 +7,16 @@
     "node": ">=24.19.0"
   },
   "scripts": {
-    "build": "vp run -r --cache build",
-    "test": "node --test 'scripts/**/*.test.ts' && vp run --filter '!cloudflare-os-starter' --cache test",
+    "postinstall": "node scripts/install-submodule.ts",
+    "install:submodule": "node scripts/install-submodule.ts",
+    "build": "node scripts/install-submodule.ts --check && vp run --filter '!cloudflare-os-starter' --cache build",
+    "test": "node scripts/install-submodule.ts --check && node --test 'scripts/**/*.test.ts' && vp run --filter '!cloudflare-os-starter' --cache test",
     "types:scripts": "tsc -p scripts/tsconfig.json",
     "lint:check": "vp lint",
     "lint:fix": "vp lint --fix",
     "lint": "pnpm run lint:check && pnpm run types:scripts && pnpm run build",
-    "check": "node scripts/deploy.ts --check",
-    "deploy": "node scripts/deploy.ts"
+    "check": "node scripts/install-submodule.ts --check && node scripts/deploy.ts --check",
+    "deploy": "node scripts/install-submodule.ts --check && node scripts/deploy.ts"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",

@@ -42,8 +42,7 @@ Expected baseline commands are:
 
 ```sh
 git submodule update --init
-pnpm install
-pnpm --dir cloudflare-os install
+pnpm install                  # its postinstall (`scripts/install-submodule.ts`) installs cloudflare-os/'s workspace too
 pnpm exec wrangler login
 pnpm check
 pnpm deploy
@@ -161,7 +160,7 @@ Ask once for any decisions not established by existing approved configuration:
 
 1. Evaluation or production, target account, exact hostname, and zone for a custom domain. On a `workers.dev` route, also the exact `publicBaseUrl` origin, which the operator has to supply because nothing in the checkout can derive it.
 2. Access application, intended users, identity provider requirements, administrators, and denied test identity.
-3. Stable names for the Router, Workshop, Context, Scheduler, Custom Gatekeeper, and Error Reporter. Only the Router's name appears in the public URL; the Workshop's is the identity every Durable Object belongs to, and Context and Scheduler own Durable Objects of their own — collections and schedules — so renaming either strands its data.
+3. Stable names for the Router, Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, and Error Reporter. Only the Router's name appears in the public URL; the Workshop's is the identity every Durable Object belongs to, and Context and Scheduler own Durable Objects of their own — collections and schedules — so renaming either strands its data.
 4. New auto-provisioned or existing resource for each of Context KV, Blueprints KV, Avatars KV, and Blueprint Content R2.
 5. Which AI Gateway and which providers; billing/BYOK on the gateway, budget, prompt/response logging, and retention. Disabling `aiGateway` at all is the exception, not the default.
 6. Error Reporter enabled state, environment/release metadata, telemetry sampling, and retention/export policy.
@@ -182,7 +181,7 @@ Temporary `wrangler.prod.jsonc` files are generated implementation details. Neve
 
 Treat routing, authentication, and `/admin` authorization as separate controls.
 
-The route belongs to the Router alone. The other five Workers are generated with `workers_dev: false`, no routes, and Preview URLs off, so the Router's hostname is the single Access-protected entrance. Verify that in the generated configs rather than assuming it, and treat any additional public route on a backend Worker as an Access bypass.
+The route belongs to the Router alone. The other six Workers are generated with `workers_dev: false`, no routes, and Preview URLs off, so the Router's hostname is the single Access-protected entrance. Verify that in the generated configs rather than assuming it, and treat any additional public route on a backend Worker as an Access bypass.
 
 For production:
 
@@ -286,9 +285,10 @@ Before requesting approval, inventory current deployed version IDs for all affec
 1. Error Reporter, when enabled.
 2. Context.
 3. Scheduler.
-4. Custom Gatekeeper.
-5. Workshop.
-6. Router, which binds every one of the above.
+4. Web Search.
+5. Custom Gatekeeper.
+6. Workshop.
+7. Router, which binds every one of the above.
 
 If current `scripts/deploy.ts` differs, use its order. The Router going last means a failure before it leaves the previous Router version still serving the public URL over partly-updated backends, so a healthy-looking site is not evidence the deploy completed. Breaking cross-Worker contracts need parallel identities and a controlled binding switch, not an in-place sequential deploy.
 
@@ -309,14 +309,15 @@ Success requires evidence for every applicable item:
 - Access redirects/denies unauthenticated users, allows the intended identity, and denies the negative test identity.
 - `/admin` allows an administrator and denies an authenticated non-administrator.
 - Signup, connector, Context, and Gatekeeper policies match the approved decisions.
-- Workshop, Context, Scheduler, Custom Gatekeeper, and Error Reporter have no public routes and no Preview URLs. Each would be an unauthenticated path around the Router's Access application.
+- Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, and Error Reporter have no public routes and no Preview URLs. Each would be an unauthenticated path around the Router's Access application.
 - Existing data remains visible; newly created data persists across a safe reload or redeploy test.
 - Context Artifacts is absent when disabled, or an approved Git-backed collection can be populated and refreshed in the intended stable namespace when enabled.
 - Each Workshop service binding targets the intended service, entrypoint, and props, and each Router service binding targets the intended service with no entrypoint. The Context binding's `sharingDomain` prop matches the boundary the existing collections live under.
 - The Custom Gatekeeper is disabled or behaves according to its reviewed policy; approved reads appear as observations.
 - The model picker lists the configured providers' models, and one approved low-cost request proves the runtime path, with separate evidence for billing ownership, provider/Gateway selection, prompt collection, retention, and log access, plus token scope where a token is required. An empty picker is a failure, not an absence of evidence: see `references/troubleshooting.md`.
 - Existing schedules are still listed and a newly created one fires. Both come from the Scheduler's own Durable Objects, so an empty list on an upgraded or migrated deployment points at its Worker name, not at its storage.
-- Router, Workshop, Context, Scheduler, Custom Gatekeeper, and Reporter logs are available with the expected sampling.
+- An agent's web search returns results. It runs through the account's `default` AI Gateway, independent of the configured `aiGateway.name`.
+- Router, Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, and Reporter logs are available with the expected sampling.
 - The Reporter query surface exists; absence of events is not a failure without an explicit capture.
 - No secrets or generated Wrangler files are tracked.
 - Last-known-good deployment IDs and recovery instructions are recorded.

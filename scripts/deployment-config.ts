@@ -111,6 +111,11 @@ export interface DeploymentConfig {
     workshop: { name: string };
     context: { name: string };
     scheduler: { name: string };
+    /**
+     * The Web Search Gatekeeper. Ambient, like Context and Scheduler, and preinstalled by the hosted
+     * flow. Searches through the account's `default` AI Gateway.
+     */
+    websearch: { name: string };
     customGatekeeper: { name: string };
     /** Only required when `errorReporting.enabled`. */
     errorReporter?: { name: string };
@@ -149,7 +154,7 @@ export interface ProdObservabilityConfig extends ObservabilityConfig {
  * `BindingDecl`s, because the release manifest replaces every id with a placeholder while a
  * generated config either names the resource or leaves it for automatic provisioning.
  *
- * `assets` is *not* redeclared -- upstream's is already the shape written here.
+ * `assets` and `ai` are *not* redeclared -- upstream's are already the shapes written here.
  */
 export type ProdWranglerConfig =
   Omit<WranglerConfig, "observability" | "artifacts" | "kv_namespaces" | "r2_buckets">
@@ -167,8 +172,6 @@ export type ProdWranglerConfig =
     /** Turned off on every Worker: a preview URL is an unauthenticated path around Access. */
     preview_urls?: boolean;
     observability?: ProdObservabilityConfig;
-    /** Workers AI. Both the AI Gateway transport and what webFetch's `toMarkdown()` runs on. */
-    ai?: BindingDecl;
     /** Secrets wrangler refuses to deploy without. Emitted only when one is genuinely needed. */
     secrets?: { required: string[] };
     /** Artifacts namespaces. An array, unlike upstream's single-binding declaration. */
@@ -181,6 +184,7 @@ export interface GeneratedConfigs {
   workshop: ProdWranglerConfig;
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
+  websearch: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
   /** Absent when `errorReporting.enabled` is false. */
   errorReporter?: ProdWranglerConfig;
@@ -192,6 +196,7 @@ export interface BaseConfigs {
   workshop: ProdWranglerConfig;
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
+  websearch: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
   errorReporter: ProdWranglerConfig;
 }

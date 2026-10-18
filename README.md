@@ -46,7 +46,7 @@ This repository adds deployment controls around a pinned [Cloudflare OS](https:/
 
 <img src="docs/assets/architecture.svg" alt="Cloudflare OS deployment architecture: users reach one public route, owned by the router Worker, which serves the frontend and proxies /api to the Workshop backend and /gatekeeper/&lt;name&gt; to the matching Gatekeeper. Behind it is the pinned Cloudflare OS release, holding the Workshop kernel, Gadgets, Blueprints, and the default Gatekeepers. Service bindings connect it to the Workers and resources this repository owns: AI Gateway with no API token, custom Gatekeepers, the Error Reporter, and KV and R2 storage.">
 
-The deployment is six Workers. A **router** owns the public route and serves the frontend, proxying `/api` to the Workshop backend and `/gatekeeper/<name>` to whichever Gatekeeper the binding name matches; the Workshop, the Context, Scheduler and custom Gatekeepers, and the Error Reporter sit behind it with no route of their own, reachable only over service bindings.
+The deployment is seven Workers. A **router** owns the public route and serves the frontend, proxying `/api` to the Workshop backend and `/gatekeeper/<name>` to whichever Gatekeeper the binding name matches; the Workshop, the Context, Scheduler, Web Search and custom Gatekeepers, and the Error Reporter sit behind it with no route of their own, reachable only over service bindings.
 
 The deploy command derives temporary Wrangler files from upstream base configs, builds the frontend in Cloudflare Access mode, deploys the private Error Reporter, the Gatekeepers and the Workshop before the router that binds them, and removes generated files even on failure. Secrets never enter tracked configuration.
 
@@ -67,9 +67,10 @@ Install [Node.js 24.19 or newer](https://nodejs.org/) (the deploy scripts are Ty
 ```sh
 git submodule update --init
 pnpm install
-pnpm --dir cloudflare-os install
 pnpm exec wrangler login
 ```
+
+`pnpm install` installs the submodule's own workspace too, from a `postinstall` hook. If you install with `--ignore-scripts`, run `pnpm install:submodule` afterwards; `pnpm check` says so if you forget.
 
 Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](https://developers.cloudflare.com/kv/), [R2](https://developers.cloudflare.com/r2/), [Browser Rendering](https://developers.cloudflare.com/browser-rendering/), and [Dynamic Worker Loaders](https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/). It also needs [Workers AI](https://developers.cloudflare.com/workers-ai/) and [AI Gateway](https://developers.cloudflare.com/ai-gateway/), which the default model catalog runs on; only turning that catalog off makes them dispensable. [Artifacts](https://developers.cloudflare.com/artifacts/) is optional.
 
@@ -102,12 +103,13 @@ Backend error reporting is enabled without a vendor account. Explicit upstream i
 ### 4. Verify the deployment
 
 - Open the router's hostname and confirm Access signs in with the expected identity, and that it is the only public route into the deployment.
-- Open `/admin`, confirm the email is an administrator, and set Context, Scheduler and Custom Gatekeepers to disabled, optional, or enabled.
+- Open `/admin`, confirm the email is an administrator, and set Context, Scheduler, Web Search and Custom Gatekeepers to disabled, optional, or enabled.
 - If Context Artifacts is enabled, create a Git-backed collection and confirm its repository can be populated and refreshed.
 - Enable the Custom Gatekeeper, ask for deployment information, and confirm its read appears as an observation.
 - Open the Error Reporter Worker's [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) and verify its structured `error_report` query surface.
 - Ask an agent to schedule something a few minutes out, and confirm it runs — that exercises the Scheduler Gatekeeper end to end.
-- Review logs for the router, Workshop, Context, Scheduler, custom Gatekeeper, and Error Reporter Workers.
+- Ask an agent to search the web for something recent, and confirm it returns results. That exercises the Web Search Gatekeeper and the account's `default` AI Gateway it searches through.
+- Review logs for the router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, and Error Reporter Workers.
 
 ## Customization
 

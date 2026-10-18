@@ -32,6 +32,11 @@
     // the Context Gatekeeper
     "scheduler": { "name": "<SCHEDULER_WORKER_NAME>" },
 
+    // The Web Search Gatekeeper, which lets agents search the public web. Ambient too. It searches
+    // through the account's "default" AI Gateway -- fixed upstream, independent of aiGateway.name
+    // below -- which Cloudflare creates on first use, so there is nothing to set up.
+    "websearch": { "name": "<WEBSEARCH_WORKER_NAME>" },
+
     "customGatekeeper": { "name": "<CUSTOM_GATEKEEPER_WORKER_NAME>" },
     "errorReporter": { "name": "<ERROR_REPORTER_WORKER_NAME>" }
   },

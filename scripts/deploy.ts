@@ -24,6 +24,7 @@ const packageDirs = {
   workshop: "cloudflare-os/packages/workshop-backend",
   context: "cloudflare-os/packages/gatekeeper-context",
   scheduler: "cloudflare-os/packages/gatekeeper-scheduler",
+  websearch: "cloudflare-os/packages/gatekeeper-websearch",
   customGatekeeper: "packages/custom-gatekeeper",
   errorReporter: "packages/error-reporter",
 } as const;
@@ -39,6 +40,7 @@ const requiredPaths = [
   "workers.workshop.name",
   "workers.context.name",
   "workers.scheduler.name",
+  "workers.websearch.name",
   "workers.customGatekeeper.name",
   "access.issuer",
   "access.audience",
@@ -217,7 +219,8 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     .map(([, worker]) => worker.name);
   if (new Set(workerNames).size !== workerNames.length) {
     throw new Error(
-      "Router, Workshop, Context, Scheduler, and custom Gatekeeper names must be unique.");
+      "Router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, and Error Reporter " +
+      "names must be unique.");
   }
   if (!workerNames.every((name) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))) {
     throw new Error("Worker names must use lowercase letters, numbers, and hyphens.");
@@ -409,7 +412,7 @@ function setCommon(
   delete config.routes;
   if (route.customDomain) Object.assign(config, routeConfig(route));
   // The router is the Access-protected origin, and a preview URL is an unauthenticated path around
-  // it. Off on every Worker: the five behind the router have no business being publicly reachable
+  // it. Off on every Worker: the six behind the router have no business being publicly reachable
   // either.
   config.preview_urls = false;
   config.observability = {
@@ -434,6 +437,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   const workshop = structuredClone(bases.workshop);
   const context = structuredClone(bases.context);
   const scheduler = structuredClone(bases.scheduler);
+  const websearch = structuredClone(bases.websearch);
   const customGatekeeper = structuredClone(bases.customGatekeeper);
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
@@ -447,6 +451,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     // vendor-RPC bindings. The binding name is what picks the /gatekeeper/<name> path.
     { binding: "GATEKEEPER_CONTEXT", service: config.workers.context.name },
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
+    { binding: "GATEKEEPER_WEBSEARCH", service: config.workers.websearch.name },
     { binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper.name },
   ];
 
@@ -508,6 +513,13 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       service: config.workers.scheduler.name,
       entrypoint: "GatekeeperVendor",
     },
+    // No props either: searches are scoped to nobody, and the only state is the per-workspace
+    // `WebSearchGatekeeper` facet, reached through `ctx.exports`.
+    {
+      binding: "GATEKEEPER_WEBSEARCH",
+      service: config.workers.websearch.name,
+      entrypoint: "GatekeeperVendor",
+    },
     {
       binding: "GATEKEEPER_CUSTOM",
       service: config.workers.customGatekeeper.name,
@@ -546,6 +558,12 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   // here without adding a configuration surface for it.
   setCommon(scheduler, config, config.workers.scheduler.name);
 
+  // Likewise nothing of its own to configure. Its base config's `ai` binding, `.txt` rule and
+  // Durable Object migrations carry over as they are. The search itself goes through the account's
+  // `default` AI Gateway (`GATEWAY_ID` in gatekeeper-websearch/src/search.ts), which Cloudflare
+  // creates on first use -- independent of `aiGateway.name`, which only steers the Workshop.
+  setCommon(websearch, config, config.workers.websearch.name);
+
   setCommon(customGatekeeper, config, config.workers.customGatekeeper.name);
   customGatekeeper.vars = {
     CUSTOM_NAME: config.customGatekeeper.name,
@@ -557,7 +575,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   }
 
   return {
-    router, workshop, context, scheduler, customGatekeeper,
+    router, workshop, context, scheduler, websearch, customGatekeeper,
     ...(errorReporter && { errorReporter }),
   };
 }
@@ -604,6 +622,8 @@ export function buildCommands(config: DeploymentConfig): BuildCommand[] {
     // The Scheduler's `build` nests the same cached `vp run build:app`, so it needs the same pair.
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
+    // A type-check only: wrangler's own build command runs capnweb-validate at deploy time.
+    { args: submoduleBuild("@gadgets/gatekeeper-websearch") },
     { args: ownBuild("custom-gatekeeper") },
     ...(config.errorReporting.enabled ? [{ args: ownBuild("error-reporter") }] : []),
     // Access mode is a build-time constant in the frontend bundle (`src/useAuth.ts`), so it is set
@@ -719,6 +739,7 @@ async function main(): Promise<void> {
     workshop: await readJsonc(join(root, packageDirs.workshop, "wrangler.jsonc")),
     context: await readJsonc(join(root, packageDirs.context, "wrangler.jsonc")),
     scheduler: await readJsonc(join(root, packageDirs.scheduler, "wrangler.jsonc")),
+    websearch: await readJsonc(join(root, packageDirs.websearch, "wrangler.jsonc")),
     customGatekeeper: await readJsonc(join(root, packageDirs.customGatekeeper, "wrangler.jsonc")),
     errorReporter: await readJsonc(join(root, packageDirs.errorReporter, "wrangler.jsonc")),
   });
@@ -739,6 +760,7 @@ async function main(): Promise<void> {
     }
     deployWorker(packageDirs.context, deployArgs);
     deployWorker(packageDirs.scheduler, deployArgs);
+    deployWorker(packageDirs.websearch, deployArgs);
     deployWorker(packageDirs.customGatekeeper, deployArgs);
     deployWorker(packageDirs.workshop, deployArgs);
     // Last: it binds every one of the above.
