@@ -24,13 +24,19 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
 
   const result = await setupAccess(await ctx.client(), target, { dryRun });
   if (result.kind !== "reused" && result.wildcard) {
+    // Once the dedicated one exists, Access applies it ahead of the wildcard: using the wildcard then
+    // means deleting it first.
     ctx.out.log(`Access application "${result.wildcard.name}" covers ${target.host} with a wildcard, under a policy of ` +
-      `its own. A dedicated one naming ${target.host} takes precedence over it, admitting only access.admins. To use ` +
-      "the wildcard's instead, set access.audience to its AUD tag.");
+      `its own. A dedicated one naming ${target.host} takes precedence over it, admitting only access.admins. ` +
+      (result.kind === "dry-run"
+        ? `To use the wildcard's policy instead, create nothing and set access.audience to its AUD, ${result.wildcard.aud}.`
+        : `To use the wildcard's policy instead, delete "${result.app.name}" in the Zero Trust dashboard, then set ` +
+          `access.audience to the wildcard's AUD, ${result.wildcard.aud}.`));
   }
   if (result.kind === "dry-run") {
-    ctx.out.log(`No Access application covers ${target.host}. The request that would create one is on ` +
-      `stdout. Then access.issuer would be ${result.issuer}. Dry run: nothing created, nothing written.`);
+    ctx.out.log(`No Access application ${result.wildcard ? "names" : "covers"} ${target.host}. The request that ` +
+      `would create one is on stdout. Then access.issuer would be ${result.issuer}. Dry run: nothing created, ` +
+      "nothing written.");
     ctx.out.json(result.request);
     return 0;
   }

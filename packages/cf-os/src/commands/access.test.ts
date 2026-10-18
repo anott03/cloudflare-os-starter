@@ -52,6 +52,23 @@ test("--dry-run prints the request as JSON on stdout and writes nothing", async 
   assert.equal(calls.filter((call) => call.args.includes("create")).length, 1);
 });
 
+test("names a covering wildcard, and how to use it, before and after creating one ahead of it", async (t) => {
+  const corp = { name: "Corp", aud: "aud-corp", domain: "*.example.com" };
+  const dry = await access(scratchProject(t, READY), {
+    "zero-trust organization get": organization,
+    "zero-trust access applications list": [corp],
+    "zero-trust access applications create": (args) => ({ method: "POST", body: JSON.parse(flag(args, "--body")!) }),
+  }, true);
+  assert.match(dry.stderr(), /"Corp" covers os\.example\.com with a wildcard[\s\S]*create nothing and set access\.audience to its AUD, aud-corp/);
+  const created = await access(scratchProject(t, READY), {
+    "zero-trust organization get": organization,
+    "zero-trust access applications list": [corp],
+    "zero-trust access applications create": { name: "Cloudflare OS acme-os", aud: "aud-new" },
+  });
+  // Set to the wildcard's AUD with the new one still there, it would fail the next check.
+  assert.match(created.stderr(), /delete "Cloudflare OS acme-os" in the Zero Trust dashboard, then set access\.audience/);
+});
+
 test("writes issuer and audience back, comments intact, and prints them", async (t) => {
   const root = scratchProject(t, READY);
   const { code, json } = await access(root, {

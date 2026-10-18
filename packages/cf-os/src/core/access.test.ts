@@ -84,6 +84,18 @@ test("reports a covering wildcard application, but creates one naming the hostna
   assert.ok(reused.kind === "reused" && reused.app === exact);
 });
 
+test("keeps a covering wildcard application the file already chose", async () => {
+  const wildcard = { name: "Wildcard", aud: "aud-wildcard", domain: "*.example.com" };
+  const client = memoryClient({ organization, accessApps: [wildcard] });
+  const result = await setupAccess(client, { ...target, audience: "aud-wildcard" });
+  assert.ok(result.kind === "reused" && result.app === wildcard);
+  assert.deepEqual(client.created, [], "created one over the wildcard the file chose");
+  // Read from the file, placeholder aside.
+  assert.equal(accessTarget({ ...file({ customDomain: "os.example.com" }), access: {
+    issuer: "https://acme.cloudflareaccess.com", audience: "aud-wildcard", admins: ["a@example.com"] } }).audience, "aud-wildcard");
+  assert.equal(accessTarget(file({ customDomain: "os.example.com" })).audience, undefined);
+});
+
 test("does not reuse an application gating only a path of the hostname", async () => {
   const client = memoryClient({ organization, accessApps: [{ name: "Admin", aud: "x", domain: "os.example.com/admin" }] });
   assert.equal((await setupAccess(client, target)).kind, "created");

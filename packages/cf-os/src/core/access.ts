@@ -1,6 +1,9 @@
-// Cloudflare Access in front of a deployment: the self-hosted application covering the router's
-// hostname, found if one already does and created if not. Idempotent -- an application already
-// covering the hostname is reused, never duplicated, so re-running after a partial setup is safe.
+// Cloudflare Access in front of a deployment: the self-hosted application naming the router's
+// hostname, found if one already does and created if not. Idempotent -- an application naming the
+// hostname is reused, never duplicated, so re-running after a partial setup is safe. A `*.<parent>`
+// wildcard application covering it is reused only once the deployment file's audience is its own,
+// a choice made in `init` or by hand; otherwise the one created names the hostname, so Access
+// applies it first.
 //
 // The application it creates admits exactly `access.admins`, by email. That is the narrowest policy
 // that works; widening it (an email domain, an IdP group) is a dashboard decision, not a default.
@@ -29,6 +32,8 @@ export interface AccessTarget {
   /** The hostname users reach the router on, and so the one Access has to cover. */
   host: string;
   admins: string[];
+  /** The file's `access.audience`, once set: a covering wildcard application with it is kept. */
+  audience?: string;
 }
 
 /** Whether `text` is one email address, as Access policies and `access.admins` take it. */
@@ -74,7 +79,11 @@ export function accessTarget(file: Record<string, unknown>, where = "deployment.
       `${where}: set access.admins to at least one email address first. The new Access ` +
       "application admits exactly those addresses.");
   }
-  return { accountId, routerName, host, admins: admins as string[] };
+  const audience = valueAtPath(file, ["access", "audience"]);
+  return {
+    accountId, routerName, host, admins: admins as string[],
+    ...typeof audience === "string" && audience && !isPlaceholder(audience) ? { audience } : {},
+  };
 }
 
 /** The Access application body for a fresh install. */
@@ -112,8 +121,9 @@ export type AccessLookup =
 
 /**
  * The account's issuer, and the application already naming `target.host` if there is one. A
- * wildcard one covering it is only reported: its policy admits whoever it admits across the parent
- * domain, which is wider than `target.admins`, so reusing it is the operator's choice to make.
+ * wildcard one covering it is only reported, unless `target.audience` is already its: its policy
+ * admits whoever it admits across the parent domain, wider than `target.admins`, so reusing it is
+ * the operator's choice to make.
  */
 export async function lookupAccess(client: CloudflareClient, target: AccessTarget): Promise<AccessLookup> {
   let issuer: string | undefined;
@@ -136,7 +146,9 @@ export async function lookupAccess(client: CloudflareClient, target: AccessTarge
   // Every application, not a domain query: the API's matches the hostname exactly, which misses a
   // `*.<parent>` application already covering it.
   const app = accessAppFor((await client.listAccessApps(target.accountId)).filter((app) => app.aud), target.host);
-  if (app && accessAppCoverage(app, target.host) === "exact") return { kind: "found", issuer, app };
+  if (app && (accessAppCoverage(app, target.host) === "exact" || app.aud === target.audience)) {
+    return { kind: "found", issuer, app };
+  }
   return { kind: "missing", issuer, wildcard: app };
 }
 

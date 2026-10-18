@@ -24,7 +24,7 @@
 // scaffolding, it is on the packed path: node builtins and this package's dependency-free modules.
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { displayPath, type CommandArgs, type Context } from "../context.ts";
 import { defaultSpawn, succeeded, type SpawnTool } from "../tools.ts";
 import { DEFAULT_TEMPLATE, UPSTREAM } from "./scaffold.ts";
@@ -437,7 +437,10 @@ function shellWord(value: string): string {
 function rerunCommand(state: Update): string {
   const to = state.to?.replace(/^#(\d+)$/, "pull/$1");
   return ["npx cf-os@latest update",
-    ...state.template !== DEFAULT_TEMPLATE ? [`--template ${shellWord(state.template)}`] : [],
+    // A Windows path with forward slashes, which git takes as well, needs no quotes cmd.exe would not read.
+    ...state.template !== DEFAULT_TEMPLATE
+      ? [`--template ${shellWord(sep === "\\" ? state.template.replaceAll("\\", "/") : state.template)}`]
+      : [],
     ...state.ref !== DEFAULT_REF ? [`--ref ${shellWord(state.ref)}`] : [],
     ...state.givenSubmodule ? [`--submodule ${shellWord(state.givenSubmodule)}`] : [],
     to ? `--to ${shellWord(to)}${state.preview ? " --preview" : ""}` : "--upstream",
@@ -844,7 +847,7 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
   const to = args.values.to as string | undefined;
   const preview = Boolean(args.values.preview);
   if (preview && to === undefined) {
-    throw new Error("--preview pins an upstream branch for a merge request's preview, so it needs --to <branch|#PR|commit>.");
+    throw new Error("--preview pins an upstream branch for a merge request's preview, so it needs --to <branch|pull/N|commit>.");
   }
   const upstream = Boolean(args.values.upstream) || to !== undefined;
 

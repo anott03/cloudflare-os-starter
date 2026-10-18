@@ -577,7 +577,7 @@ const offMain = (extra: Replies = {}): Replies => ({
 
 test("--preview needs --to", async (t) => {
   const { code, commands } = await updating(t, { path: "public", values: { preview: true } });
-  assert.match(String(code), /--preview pins an upstream branch .*needs --to <branch\|#PR\|commit>/);
+  assert.match(String(code), /--preview pins an upstream branch .*needs --to <branch\|pull\/N\|commit>/);
   assert.ok(!commands().some((command) => command.includes(" fetch ")));
 });
 
