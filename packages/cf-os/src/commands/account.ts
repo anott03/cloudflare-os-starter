@@ -22,6 +22,15 @@ export function formatAccounts(accounts: CfAccount[]): string {
   return accounts.map((account) => `  ${account.id}  ${account.name}`).join("\n");
 }
 
+/** `--account`, checked to be an account ID; undefined when not given. */
+export function accountFlag(ctx: Context): string | undefined {
+  const flag = ctx.flags.account;
+  if (flag !== undefined && !accountIdPattern.test(flag)) {
+    throw new Error(`--account must be a 32-hex account ID, not "${flag}".`);
+  }
+  return flag;
+}
+
 /**
  * Resolves the account for `file`. Null when it cannot without help: the candidates have been
  * printed, with `rerun` (the command to run again, `--account <id>` included) as the next step.
@@ -32,11 +41,8 @@ export async function resolveAccount(
   file: Record<string, unknown>,
   { question, rerun, where }: { question: string; rerun: string; where: string },
 ): Promise<ResolvedAccount | null> {
-  const flag = ctx.flags.account;
-  if (flag !== undefined) {
-    if (!accountIdPattern.test(flag)) throw new Error(`--account must be a 32-hex account ID, not "${flag}".`);
-    return { id: flag, isNew: true };
-  }
+  const flag = accountFlag(ctx);
+  if (flag !== undefined) return { id: flag, isNew: true };
   const fromFile = valueAtPath(file, ["accountId"]);
   if (typeof fromFile === "string" && accountIdPattern.test(fromFile)) return { id: fromFile, isNew: false };
 

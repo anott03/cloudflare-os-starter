@@ -264,9 +264,9 @@ test("the root's cf is the one cf-os runs", () => {
   // The root keeps `cf` so `pnpm exec cf auth login`, which every hint names, works there.
   const root = readJson("package.json");
   const cli = readJson("packages/cf-os/package.json");
-  assert.ok(isRecord(root) && isRecord(root.devDependencies) && isRecord(cli) && isRecord(cli.dependencies));
-  assert.equal(root.devDependencies.cf, cli.dependencies.cf);
-  assert.match(String(cli.dependencies.cf), /^\d/, "cf is pinned exactly, not ranged");
+  assert.ok(isRecord(root) && isRecord(root.devDependencies) && isRecord(cli) && isRecord(cli.devDependencies));
+  assert.equal(root.devDependencies.cf, cli.devDependencies.cf);
+  assert.match(String(cli.devDependencies.cf), /^\d/, "cf is pinned exactly, not ranged");
 });
 
 test("no submodule package is a workspace member; packages here link to the ones they use", () => {

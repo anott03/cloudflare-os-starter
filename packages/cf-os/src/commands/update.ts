@@ -75,12 +75,15 @@ function gitValue(ctx: Context, deps: UpdateDeps, args: string[], failure: strin
 }
 
 /**
- * One line per commit in `range` (touching `paths`, when given), newest first: `<short sha> <subject>`.
- * Undefined when git cannot say.
+ * One line per commit in `range`, a range or revisions such as `[a, "^b"]` (touching `paths`, when
+ * given), newest first: `<short sha> <subject>`. Undefined when git cannot say.
  */
-function commits(ctx: Context, deps: UpdateDeps, range: string, submodule?: string, paths: string[] = []): string[] | undefined {
+function commits(
+  ctx: Context, deps: UpdateDeps, range: string | string[], submodule?: string, paths: string[] = [],
+): string[] | undefined {
   const where = submodule ? ["-C", submodule] : [];
-  const result = git(ctx, deps, [...where, "log", "--format=%h %s", range, ...paths.length ? ["--", ...paths] : []]);
+  const revisions = typeof range === "string" ? [range] : range;
+  const result = git(ctx, deps, [...where, "log", "--format=%h %s", ...revisions, ...paths.length ? ["--", ...paths] : []]);
   if (!succeeded(result)) return undefined;
   return result.stdout.split("\n").filter(Boolean);
 }
@@ -104,6 +107,20 @@ function fetchUpstream(ctx: Context, deps: UpdateDeps, path: string, what: strin
     ? [`--shallow-since=${new Date((Math.min(...times) - 1) * 1000).toISOString().replace(/\.\d+Z$/, "Z")}`]
     : [];
   return deps.spawn("git", ["-C", path, "fetch", "--no-tags", ...since, UPSTREAM, what], { cwd: ctx.root, capture: false });
+}
+
+/**
+ * The pin HEAD has once `target`'s `count` commits are merged, as git's merge decides it: the starter's,
+ * unless the project moved its own pin since the two diverged and the starter did not (an earlier
+ * `update --upstream`, committed). With nothing to merge, the project's own.
+ */
+function pinAfterMerge(
+  ctx: Context, deps: UpdateDeps, path: string, target: string, count: number, oldPin: string, starterPin: string,
+): string {
+  if (!count || starterPin === oldPin) return oldPin;
+  const base = git(ctx, deps, ["merge-base", "HEAD", target]).stdout.trim();
+  if (!base) return starterPin;
+  return git(ctx, deps, ["rev-parse", `${base}:${path}`]).stdout.trim() === starterPin ? oldPin : starterPin;
 }
 
 /** What lies between two pins, as far as the submodule can see. */
@@ -212,7 +229,12 @@ interface Update {
   oldPin: string;
   /** The starter's pin at `target`; the old pin when there is no starter. */
   starterPin: string;
-  /** Where the submodule ends up: the starter's pin, or upstream's with `--upstream` or `--to`. */
+  /**
+   * The pin the merge leaves: the starter's, unless the project moved its own since the two diverged
+   * and the starter did not, or there is nothing to merge. The old pin when there is no starter.
+   */
+  mergedPin: string;
+  /** Where the submodule ends up: the merged pin, or upstream's with `--upstream` or `--to`. */
   newPin: string;
   upstream: boolean;
   /** `--to`'s ref, when the pin goes there rather than to upstream's `main`. */
@@ -229,6 +251,13 @@ interface Update {
   preview: boolean;
   /** Those of them that change the Gatekeeper contract; undefined when they could not be listed. */
   contract: string[] | undefined;
+  /**
+   * With `--upstream` or `--to` in a starter project, the merged pin's commits that neither the staged
+   * pin nor the old one has: the starter's code was adapted to them. Undefined when unlisted.
+   */
+  starterLeftOut: string[] | undefined;
+  /** Those of them that change the Gatekeeper contract. */
+  starterLeftOutContract: string[] | undefined;
   /** Whether the old pin is outside the new one's history, so there is no range at all. */
   unrelated: boolean;
   /** `.gitmodules`' URL for the submodule, when it is not upstream's: the new pin may not be there. */
@@ -263,8 +292,20 @@ function preconditions(ctx: Context, deps: UpdateDeps, path: string): { staleChe
   if (!succeeded(status)) throw new Error("Could not read the checkout's status (`git status`).");
   const lines = status.stdout.split("\n").filter(Boolean);
   // The submodule checked out somewhere other than its pin, unstaged: usually a `git pull` that did
-  // not update it. Checking out the pin is part of updating, so that is not in the way.
+  // not update it. Checking out the pin is part of updating, so that is not in the way, unless it
+  // would leave commits made in the submodule that nothing else keeps.
   const staleCheckout = lines.includes(` M ${path}`);
+  if (staleCheckout) {
+    const head = git(ctx, deps, ["-C", path, "rev-parse", "HEAD"]).stdout.trim();
+    const pin = git(ctx, deps, ["rev-parse", `HEAD:${path}`]).stdout.trim();
+    const kept = succeeded(git(ctx, deps, ["-C", path, "merge-base", "--is-ancestor", head, pin])) ||
+      git(ctx, deps, ["-C", path, "for-each-ref", "--contains", head, "--count=1"]).stdout.trim() !== "";
+    if (!kept) {
+      throw new Error(`${path} is checked out at ${short(head)}, which no branch or tag of it has, and updating ` +
+        `would check out the pin instead. Keep it first (\`git -C ${path} branch <name> ${short(head)}\`), then run ` +
+        "update again.");
+    }
+  }
   const changed = lines.filter((line) => line !== ` M ${path}`);
   if (changed.length) {
     // Usually the pin an earlier `update --upstream` staged, which stashing would not obviously undo.
@@ -318,6 +359,10 @@ function describe(ctx: Context, state: Update): void {
     ...state.droppedContract?.length
       ? [`  Gatekeeper contract: ${plural(state.droppedContract.length, "change")} the current pin has are left out.`]
       : [],
+    ...state.starterLeftOut?.length
+      ? [`  Leaves out ${plural(state.starterLeftOut.length, "commit")} of the starter's pin ${short(state.mergedPin)}, ` +
+        "which the starter's code was adapted to:", ...listed(state.starterLeftOut)]
+      : [],
     ...state.contract
       ? [state.contract.length
         ? `  Gatekeeper contract: ${state.rollback ? "changes in" : "changed in"} ${plural(state.contract.length, "commit")}` +
@@ -362,12 +407,35 @@ function merge(ctx: Context, deps: UpdateDeps, state: Update): void {
   state.merge = "conflicted";
 }
 
+/** The range from the old pin to the new one, as far as the submodule can see. */
+function rangeOf(ctx: Context, deps: UpdateDeps, state: Update): PinRange {
+  return state.newPin === state.oldPin ? EMPTY_RANGE : pinRange(ctx, deps, state.path, state.oldPin, state.newPin);
+}
+
+/** This run's `update` again, for once the merge is concluded. `#796` as `pull/796`, which a shell reads whole. */
+function rerunCommand(state: Update): string {
+  const to = state.to?.replace(/^#(\d+)$/, "pull/$1");
+  return `npx cf-os@latest update ${to ? `--to ${to}${state.preview ? " --preview" : ""}` : "--upstream"}`;
+}
+
+/** With `--upstream` or `--to` and a merge left unfinished: the pin stays the merge's, with how to stage upstream's later. */
+function deferUpstream(ctx: Context, deps: UpdateDeps, state: Update, why: string): void {
+  if (!state.upstream || state.newPin === state.mergedPin) return;
+  state.problems.push(`${why} Once the merge is concluded, run \`${rerunCommand(state)}\` again to stage upstream's ` +
+    `${upstreamRef(state)}.`);
+  Object.assign(state, { newPin: state.mergedPin, upstream: false, preview: false, starterLeftOut: [], starterLeftOutContract: [] });
+  Object.assign(state, rangeOf(ctx, deps, state));
+}
+
 /** Checks the submodule out at the merged pin, then, with `--upstream`, stages upstream's. */
 function checkOutSubmodule(ctx: Context, deps: UpdateDeps, state: Update): void {
   const { path } = state;
   if (state.conflicts.includes(path)) {
-    state.problems.push(`The ${path} pin itself conflicted. Choose one (\`git checkout --theirs ` +
-      `${path}\` takes the starter's), then \`git submodule update --init --recursive\`.`);
+    const reinstall = state.installable ? ", then `pnpm install`" : "";
+    state.problems.push(`The ${path} pin itself conflicted, so it is not checked out. To take the starter's, run ` +
+      `\`git -C ${path} checkout --detach ${state.starterPin}\` and \`git add ${path}\`; to keep the project's, the ` +
+      `same with ${state.oldPin}${reinstall}.`);
+    deferUpstream(ctx, deps, state, `${path} was not moved to upstream's pin, as its pin conflicted.`);
     return;
   }
   const checkout = deps.spawn("git", ["submodule", "update", "--init", "--recursive", "--", path],
@@ -377,14 +445,23 @@ function checkOutSubmodule(ctx: Context, deps: UpdateDeps, state: Update): void 
       `--recursive ${path}\`${state.installable ? ", then `pnpm install`" : ""}.`);
     return;
   }
-  if (!state.upstream || state.newPin === state.starterPin) return;
+  // The gitlink the merge left in the index, which is what was checked out.
+  const merged = state.merge === "none" ? "" : git(ctx, deps, ["rev-parse", `:${path}`]).stdout.trim();
+  if (merged && merged !== state.mergedPin) {
+    state.mergedPin = merged;
+    if (!state.upstream) {
+      state.newPin = merged;
+      Object.assign(state, rangeOf(ctx, deps, state));
+    } else {
+      const replaced = merged !== state.oldPin && merged !== state.newPin;
+      const revisions = [merged, `^${state.newPin}`, `^${state.oldPin}`];
+      state.starterLeftOut = replaced ? commits(ctx, deps, revisions, path) : [];
+      state.starterLeftOutContract = replaced ? commits(ctx, deps, revisions, path, CONTRACT) : [];
+    }
+  }
+  if (!state.upstream || state.newPin === state.mergedPin) return;
   if (state.merge === "conflicted") {
-    state.problems.push(`${path} was left at the starter's pin, as the merge has conflicts. Once it is ` +
-      `concluded, run \`npx cf-os@latest update ${state.to ? `--to ${state.to}${state.preview ? " --preview" : ""}` : "--upstream"}\` ` +
-      "again to stage " +
-      `upstream's ${upstreamRef(state)}.`);
-    state.newPin = state.starterPin;
-    Object.assign(state, pinRange(ctx, deps, path, state.oldPin, state.starterPin));
+    deferUpstream(ctx, deps, state, `${path} was left at the merged pin, as the merge has conflicts.`);
     return;
   }
   const detached = git(ctx, deps, ["-C", path, "checkout", "--detach", state.newPin]);
@@ -502,6 +579,11 @@ function starterSteps(state: Update): string[] {
           "before committing the pin.")]
       : [],
     ...previewSteps(state),
+    ...state.starterLeftOut?.length
+      ? [`The merged starter code was adapted to the commits under "Left out of the starter's pin", which the staged ` +
+        "pin does not have. Check what in `packages/cf-os`, `deployment.jsonc` and the starter's Gatekeepers depends " +
+        "on them, and take that back to match the staged pin."]
+      : [],
     // The starter adapts its own code to its pin, but not the operator's Gatekeepers.
     ...contractStep(state).map((step) => `${step} That includes the operator's own Gatekeepers, which the starter ` +
       "cannot adapt for them."),
@@ -592,6 +674,7 @@ function summary(state: Update, status: "up-to-date" | "dry-run" | "declined" | 
       preview: state.preview,
       commits: moved ? state.submodule?.length ?? null : 0,
       leftOut: state.dropped?.length ?? null,
+      starterLeftOut: state.starterLeftOut?.length ?? null,
       contractChanges: state.contract?.length ?? null,
     },
     installed: state.installable ? state.installed : null,
@@ -609,7 +692,9 @@ function brief(state: Update, when: Date): string {
     conflicted: `**Stopped on conflicts.** The merge is in progress, with conflicts in:\n\n${
       state.conflicts.map((file) => `- \`${file}\``).join("\n")}`,
   }[state.merge];
-  const pinState = !pinMoved
+  const pinState = state.conflicts.includes(state.path)
+    ? "**conflicted**, not checked out: see below"
+    : !pinMoved
     ? "unchanged"
     : state.staged
       ? state.preview
@@ -682,6 +767,15 @@ function brief(state: Update, when: Date): string {
     "",
     ...state.dropped?.length
       ? [`## Left out (${state.dropped.length})`, "", leftOut(state), ""]
+      : [],
+    ...state.starterLeftOut?.length
+      ? [`## Left out of the starter's pin (${state.starterLeftOut.length})`, "",
+        `The merge committed the starter's pin \`${state.mergedPin}\`, and the staged pin replaces it without these:`, "",
+        commitList(state.starterLeftOut, undefined),
+        ...state.starterLeftOutContract?.length
+          ? ["", "Of these, these change the Gatekeeper contract:", "", commitList(state.starterLeftOutContract, undefined)]
+          : [],
+        ""]
       : [],
     ...pinMoved
       ? [`## Gatekeeper contract changes${state.rollback ? " rolled back" : ""}${state.contract ? ` (${state.contract.length})` : ""}`,
@@ -765,10 +859,16 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
     starter = commits(ctx, deps, `HEAD..${target}`) ?? [];
     starterPin = gitValue(ctx, deps, ["rev-parse", `${target}:${path}`],
       `${template} ${ref} does not pin ${path}, so it is not a Cloudflare OS starter.`);
+    // A merge commits onto whatever is checked out, and a detached HEAD keeps it nowhere.
+    if (starter.length && !succeeded(git(ctx, deps, ["symbolic-ref", "-q", "HEAD"]))) {
+      throw new Error("HEAD is detached (a tag or commit checked out, or a rebase stopped part way), so the merge " +
+        "would be on no branch. Switch to a branch (`git switch <branch>`) or finish the rebase, then run update again.");
+    }
   }
+  const mergedPin = isStarter ? pinAfterMerge(ctx, deps, path, target, starter.length, oldPin, starterPin) : oldPin;
 
   // The new pin's history, fetched from upstream itself rather than through the submodule's remote.
-  let newPin = starterPin;
+  let newPin = mergedPin;
   let offMain = false;
   if (upstream) {
     let target: string | undefined;
@@ -796,6 +896,8 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
         `${to} is not a commit on upstream's main since the current pin. git fetches a commit by its full SHA only, ` +
         "so for an older one (a rollback), pass all 40 characters; for a preview, the branch's name.");
     }
+    // What git can fetch it by: an abbreviated SHA, once found, by its full one.
+    const fetchable = abbreviated ? target! : spec!;
     if (target && !succeeded(git(ctx, deps, ["-C", path, "merge-base", "--is-ancestor", target, main]))) {
       if (!preview) {
         throw new Error(`${to} (${short(target)}) is not on upstream's main, and only commits on main are pinned. ` +
@@ -804,7 +906,7 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
       }
       offMain = true;
       // Fetched at depth 1, the branch has no history yet: deepened as main was, so it meets the old pin.
-      if (!succeeded(fetchUpstream(ctx, deps, path, spec!, [oldPin, target]))) {
+      if (!succeeded(fetchUpstream(ctx, deps, path, fetchable, [oldPin, target]))) {
         throw new Error(`Could not fetch ${to} from ${UPSTREAM}. git's output is above.`);
       }
     }
@@ -812,7 +914,7 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
     // A pin off main (a preview's, or the one being left) can leave it before the deepening reaches, so
     // the two do not meet here: then the whole history, which a shallow clone otherwise never has.
     if (!succeeded(git(ctx, deps, ["-C", path, "merge-base", oldPin, newPin])) && isShallow(ctx, deps, path)) {
-      deps.spawn("git", ["-C", path, "fetch", "--no-tags", "--unshallow", UPSTREAM, "main", ...offMain ? [spec!] : []],
+      deps.spawn("git", ["-C", path, "fetch", "--no-tags", "--unshallow", UPSTREAM, "main", ...offMain ? [fetchable] : []],
         { cwd: root, capture: false });
     }
   } else if (checkedOut && newPin !== oldPin) {
@@ -820,8 +922,13 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
     fetchUpstream(ctx, deps, path, newPin, [oldPin]);
   }
   const range: PinRange = newPin === oldPin ? EMPTY_RANGE : checkedOut ? pinRange(ctx, deps, path, oldPin, newPin) : UNLISTED;
+  // The merged pin's own commits, when the staged pin replaces it: those the old pin had are in the range already.
+  const replaced = upstream && mergedPin !== oldPin && mergedPin !== newPin;
+  const starterLeftOut = replaced ? commits(ctx, deps, [mergedPin, `^${newPin}`, `^${oldPin}`], path) : [];
+  const starterLeftOutContract = replaced ? commits(ctx, deps, [mergedPin, `^${newPin}`, `^${oldPin}`], path, CONTRACT) : [];
   const result: Update = {
-    isStarter, path, template, ref, oldHead, target, starter, oldPin, starterPin, newPin, upstream, to, ...range, preview: offMain,
+    isStarter, path, template, ref, oldHead, target, starter, oldPin, starterPin, mergedPin, newPin, upstream, to, ...range,
+    starterLeftOut, starterLeftOutContract, preview: offMain,
     foreignUrl: url && !isUpstream(url) ? url : undefined, merge: "none", conflicts: [], staged: false, installable: existsSync(join(root, "package.json")), installed: false,
     problems: [],
   };
@@ -880,7 +987,7 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
       ? `${path} is at upstream's ${upstreamRef(result)} (${short(result.newPin)}), staged and not committed: a preview ` +
         "pin, not for merging."
       : `${path} is at upstream's ${short(result.newPin)}, staged and not committed, for review.`
-    : result.newPin !== oldPin ? `${path} is at the starter's ${short(result.newPin)}.` : "";
+    : result.newPin !== oldPin && !result.conflicts.includes(path) ? `${path} is at the starter's ${short(result.newPin)}.` : "";
   ctx.out.log(["", outcome, pin, ...result.problems, `Wrote ${where}.`].filter(Boolean).join("\n"));
   const clean = isStarter && result.merge !== "conflicted" && !result.problems.length && !result.staged;
   // With nobody at a terminal, it is usually the coding agent itself that ran this: the brief's steps are its own.

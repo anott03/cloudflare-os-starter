@@ -9,7 +9,7 @@ import {
   CfAuthError,
   CfError,
   CfUnavailableError,
-  accessAppCovers,
+  accessAppFor,
   issuerOf,
   type CfAccessApp,
   type CloudflareClient,
@@ -127,9 +127,10 @@ export async function lookupAccess(client: CloudflareClient, target: AccessTarge
       reason: `The account's Zero Trust organization has no team domain. Finish setting it up at ${ZERO_TRUST_SETUP}.`,
     };
   }
-  const existing = (await client.listAccessApps(target.accountId, { domain: target.host }))
-    .filter((app) => accessAppCovers(app, target.host) && app.aud);
-  return existing.length ? { kind: "found", issuer, app: existing[0] } : { kind: "missing", issuer };
+  // Every application, not a domain query: the API's matches the hostname exactly, which misses a
+  // `*.<parent>` application already covering it.
+  const app = accessAppFor((await client.listAccessApps(target.accountId)).filter((app) => app.aud), target.host);
+  return app ? { kind: "found", issuer, app } : { kind: "missing", issuer };
 }
 
 /** Creates the application for `target`, returning it with the edits that point the file at it. */

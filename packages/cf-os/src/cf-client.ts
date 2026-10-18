@@ -39,7 +39,7 @@ const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** What to do about a `cf` that is not signed in, or whose token lacks a permission. */
 export const CF_AUTH_HINT =
   "run `pnpm exec cf auth login`, or set CLOUDFLARE_API_TOKEN to a token with Access: Apps and " +
-  "Policies Edit, Workers Scripts Read, Workers KV Storage Read, Workers R2 Storage Read, " +
+  "Policies Edit, Access: Organizations, Identity Providers, and Groups Edit, Workers Scripts Read, Workers KV Storage Read, Workers R2 Storage Read, " +
   "AI Gateway Read, Zone Read and DNS Read";
 
 /** The slice of `spawnSync` this uses, so tests can stand in canned output for the CLI. */
@@ -125,23 +125,27 @@ export function cfJson<T>(
   return parsed as T;
 }
 
-/** Items per page for {@link cfList}. The largest every list command used here accepts. */
+/** Items per page for {@link cfList}, unless a list command takes fewer. */
 const PER_PAGE = 100;
 
+/** The page-size ceiling of `accounts list` and `zones list`. */
+const ACCOUNTS_AND_ZONES_PER_PAGE = 50;
+
 /**
- * Every item of a paged `cf ... list`, fetched page by page. A single call returns the API's default
- * page (10 Workers, for one; `zones list` prints no `result_info` to page by either), which on a
- * busy account silently misses what it is looking for.
+ * Every item of a paged `cf ... list`, fetched `perPage` at a time. A single call returns the API's
+ * default page (10 Workers, for one; `zones list` prints no `result_info` to page by either), which
+ * on a busy account silently misses what it is looking for. `perPage` must be within the endpoint's
+ * ceiling: a page the API caps below it would read as the last.
  */
-export function cfList<T>(args: string[], options: CfOptions): T[] {
+export function cfList<T>(args: string[], options: CfOptions, perPage = PER_PAGE): T[] {
   const items: T[] = [];
   for (let page = 1; ; page++) {
-    const batch = cfJson<T[]>([...args, "--page", String(page), "--per-page", String(PER_PAGE)], options);
+    const batch = cfJson<T[]>([...args, "--page", String(page), "--per-page", String(perPage)], options);
     if (!Array.isArray(batch)) {
       throw new CfError(`cf ${args.join(" ")}: expected a JSON array, got ${typeof batch}`);
     }
     items.push(...batch);
-    if (batch.length < PER_PAGE) return items;
+    if (batch.length < perPage) return items;
   }
 }
 
@@ -178,7 +182,7 @@ export function cfClient(
       return { authenticated: result.authenticated === true, email: result.email };
     },
     async listAccounts() {
-      return cfList<CfAccount>(["accounts", "list"], on(null));
+      return cfList<CfAccount>(["accounts", "list"], on(null), ACCOUNTS_AND_ZONES_PER_PAGE);
     },
     async listWorkers(accountId) {
       return listWorkers(accountId);
@@ -199,7 +203,8 @@ export function cfClient(
     async listZones(accountId) {
       // `zones list` is not account-scoped by CLOUDFLARE_ACCOUNT_ID: it lists every zone the
       // credentials reach, so filter explicitly.
-      return cfList<CfZone>(["zones", "list", "--status", "active", "--account-id", accountId], on(accountId));
+      return cfList<CfZone>(["zones", "list", "--status", "active", "--account-id", accountId], on(accountId),
+        ACCOUNTS_AND_ZONES_PER_PAGE);
     },
     async findDnsRecords(accountId, zone, name) {
       return cfList<CfDnsRecord>(["dns", "records", "list", "--zone", zone, "--name-exact", name], on(accountId));
@@ -207,11 +212,8 @@ export function cfClient(
     async getOrganization(accountId) {
       return cfJson<CfOrganization>(["zero-trust", "organization", "get"], on(accountId));
     },
-    async listAccessApps(accountId, filter = {}) {
-      const args = ["zero-trust", "access", "applications", "list"];
-      if (filter.domain) args.push("--domain", filter.domain, "--exact");
-      if (filter.aud) args.push("--aud", filter.aud);
-      return cfList<CfAccessApp>(args, on(accountId));
+    async listAccessApps(accountId) {
+      return cfList<CfAccessApp>(["zero-trust", "access", "applications", "list"], on(accountId));
     },
     async createAccessApp(accountId, body) {
       // `create` takes only `--body`.

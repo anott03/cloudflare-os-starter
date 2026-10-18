@@ -70,8 +70,10 @@ test("reuses the application already covering the hostname", async (t) => {
   const root = scratchProject(t, READY);
   const existing: Record<string, FakeReply> = {
     "zero-trust organization get": organization,
-    "zero-trust access applications list": (args) => flag(args, "--domain") === "os.example.com"
-      ? [{ name: "Existing", aud: "aud-existing", domain: "os.example.com" }] : [],
+    "zero-trust access applications list": [
+      { name: "Admin only", aud: "aud-admin", domain: "os.example.com/admin" },
+      { name: "Existing", aud: "aud-existing", domain: "os.example.com" },
+    ],
   };
   // A dry run reports it, and still writes nothing.
   const dry = await access(root, existing, true);

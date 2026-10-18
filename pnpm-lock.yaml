@@ -74,12 +74,6 @@ importers:
       '@clack/prompts':
         specifier: ^1.8.1
         version: 1.8.1
-      cf:
-        specifier: 1.0.0-beta.17
-        version: 1.0.0-beta.17(@types/node@26.1.0)
-      jsonc-parser:
-        specifier: ^3.3.1
-        version: 3.3.1
     devDependencies:
       '@gadgets/scripts':
         specifier: link:../../cloudflare-os/scripts
@@ -87,6 +81,12 @@ importers:
       '@types/node':
         specifier: 26.1.0
         version: 26.1.0
+      cf:
+        specifier: 1.0.0-beta.17
+        version: 1.0.0-beta.17(@types/node@26.1.0)
+      jsonc-parser:
+        specifier: ^3.3.1
+        version: 3.3.1
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

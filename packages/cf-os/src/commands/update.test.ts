@@ -119,6 +119,8 @@ test("merges the starter, checks out its pin, installs, and writes the brief", a
     "git rev-parse FETCH_HEAD^{commit}",
     `git log --format=%h %s HEAD..${TARGET}`,
     `git rev-parse ${TARGET}:cloudflare-os`,
+    "git symbolic-ref -q HEAD",
+    `git merge-base HEAD ${TARGET}`,
     "git -C cloudflare-os rev-parse --is-shallow-repository",
     `git -C cloudflare-os log -1 --format=%ct ${OLD_PIN}`,
     // Deepened to just before the old pin, so the fetched commit is not a shallow root of its own.
@@ -128,6 +130,7 @@ test("merges the starter, checks out its pin, installs, and writes the brief", a
     `git -C cloudflare-os log --format=%h %s ${OLD_PIN}..${NEW_PIN} ${CONTRACT}`,
     `git merge --no-edit -m Merge branch 'main' of ${DEFAULT_TEMPLATE} ${TARGET}`,
     "git submodule update --init --recursive -- cloudflare-os",
+    "git rev-parse :cloudflare-os",
     "pnpm install",
   ]);
   assert.ok(ran.every((entry) => entry.cwd === root));
@@ -161,10 +164,11 @@ test("leaves conflicts to git: lists them, skips the install, and exits 1", asyn
   });
   assert.equal(code, 1);
   // The pin itself did not conflict, so it is checked out; the install waits for the merge.
-  assert.deepEqual(commands().slice(-3), [
+  assert.deepEqual(commands().slice(-4), [
     `git merge --no-edit -m Merge branch 'main' of ${DEFAULT_TEMPLATE} ${TARGET}`,
     "git diff --name-only --diff-filter=U",
     "git submodule update --init --recursive -- cloudflare-os",
+    "git rev-parse :cloudflare-os",
   ]);
   assert.match(stderr(), /stopped on conflicts in:\n {2}deployment\.jsonc\n {2}README\.md/);
   // No terminal, as when the coding agent runs it: the brief is its own to carry out.
@@ -237,7 +241,7 @@ test("with nothing new, says so and changes nothing", async (t) => {
   });
   assert.equal(code, 0);
   assert.match(stderr(), /Already up to date\./);
-  assert.ok(!commands().some((command) => /^git (merge|submodule)|^pnpm/.test(command)));
+  assert.ok(!commands().some((command) => /^git (merge |submodule)|^pnpm/.test(command)));
   assert.equal(brief(), undefined);
 });
 
@@ -245,7 +249,7 @@ test("--dry-run lists what is coming, and merges and writes nothing", async (t) 
   const { code, commands, stderr, brief } = await updating(t, { values: { "dry-run": true } });
   assert.equal(code, 0);
   assert.match(stderr(), /2 new commits[\s\S]*3 commits[\s\S]*Dry run: nothing was merged/);
-  assert.ok(!commands().some((command) => /^git (merge|submodule)|^pnpm/.test(command)));
+  assert.ok(!commands().some((command) => /^git (merge |submodule)|^pnpm/.test(command)));
   assert.equal(brief(), undefined);
 });
 
@@ -253,9 +257,10 @@ test("--upstream checks upstream's main out and stages it, and the brief names t
   const { code, commands, stderr, brief } = await updating(t, { values: { upstream: true } });
   assert.equal(code, 0);
   assert.ok(commands().includes(`git -C cloudflare-os fetch --no-tags --shallow-since=2025-10-09T08:53:19Z ${UPSTREAM} main`));
-  assert.deepEqual(commands().slice(-5), [
+  assert.deepEqual(commands().slice(-6), [
     `git merge --no-edit -m Merge branch 'main' of ${DEFAULT_TEMPLATE} ${TARGET}`,
     "git submodule update --init --recursive -- cloudflare-os",
+    "git rev-parse :cloudflare-os",
     `git -C cloudflare-os checkout --detach ${UPSTREAM_MAIN}`,
     "git add cloudflare-os",
     "pnpm install",
@@ -286,7 +291,7 @@ test("asks first at a terminal, and declined, merges nothing", async (t) => {
     script: [["Merge 2 starter commits; move cloudflare-os ccccccc → ddddddd (3 commits)?", false]],
   });
   assert.equal(code, 0);
-  assert.ok(!commands().some((command) => /^git (merge|submodule)|^pnpm/.test(command)));
+  assert.ok(!commands().some((command) => /^git (merge |submodule)|^pnpm/.test(command)));
   assert.equal(brief(), undefined);
 });
 
@@ -664,7 +669,7 @@ test("prints what it did as JSON on stdout, since the exit code cannot say how f
     starter: null,
     pin: {
       from: OLD_PIN, to: UPSTREAM_MAIN, source: "main", moved: true, staged: true, rollback: false, preview: false,
-      commits: 4, leftOut: 0, contractChanges: 1,
+      commits: 4, leftOut: 0, starterLeftOut: 0, contractChanges: 1,
     },
     installed: true,
     brief: join(root, BRIEF),
@@ -710,4 +715,134 @@ test("with nobody at a terminal the install's output is held back, and only its 
 test("at a terminal the install's output is shown as it runs", async (t) => {
   const { ran } = await updating(t, { script: [["Merge 2 starter commits", true]] });
   assert.equal(ran.find((entry) => entry.command === "pnpm")!.capture, false);
+});
+
+/** The JSON summary's `pin`, as far as these tests read it. */
+type Pin = { from: string; to: string; source: string; moved: boolean; preview: boolean; starterLeftOut: number | null };
+const pinOf = (json: unknown[]) => (json[0] as { pin: Pin }).pin;
+
+test("a pin the project moved itself, which the starter has not, survives the merge: no move is reported", async (t) => {
+  const base = "1".repeat(40);
+  const { code, json, stderr, brief } = await updating(t, {
+    replies: {
+      [`git merge-base HEAD ${TARGET}`]: { stdout: `${base}\n` },
+      // The starter still pins what both had then, so the merge keeps the project's own.
+      [`git rev-parse ${base}:cloudflare-os`]: { stdout: `${NEW_PIN}\n` },
+    },
+  });
+  assert.equal(code, 0);
+  assert.deepEqual([pinOf(json).to, pinOf(json).moved], [OLD_PIN, false]);
+  assert.doesNotMatch(stderr(), /cloudflare-os: ccccccc →|is at the starter's/);
+  const text = brief()!;
+  assert.match(text, new RegExp(`\\| \`${OLD_PIN}\` \\| \`${OLD_PIN}\` \\(unchanged\\) \\|`));
+  assert.doesNotMatch(text, /rollback|rolled back/i);
+});
+
+test("with every starter commit already merged, the pin is the project's own, not the starter's", async (t) => {
+  const { code, json, commands } = await updating(t, { replies: { "git log --format=%h %s HEAD..": { stdout: "" } } });
+  assert.equal(code, 0);
+  assert.equal((json[0] as { status: string }).status, "up-to-date");
+  assert.equal(pinOf(json).moved, false);
+  assert.ok(!commands().some((command) => /^git (merge |submodule)/.test(command)));
+});
+
+test("the summary reports the gitlink the merge left, when it is not the one expected", async (t) => {
+  const { json, stderr, brief } = await updating(t, { replies: { "git rev-parse :cloudflare-os": { stdout: `${OLD_PIN}\n` } } });
+  assert.deepEqual([pinOf(json).to, pinOf(json).moved], [OLD_PIN, false]);
+  assert.doesNotMatch(stderr(), /is at the starter's/);
+  assert.match(brief()!, /## cloudflare-os commits \(0\)|None: the pin did not move/);
+});
+
+test("a conflicted pin gets commands that set a gitlink, and nothing claims it is checked out", async (t) => {
+  const { code, stderr, brief, json } = await updating(t, {
+    replies: { "git merge": { status: 1 }, "git diff --name-only --diff-filter=U": { stdout: "cloudflare-os\n" } },
+  });
+  assert.equal(code, 1);
+  const [problem] = (json[0] as { problems: string[] }).problems;
+  assert.match(problem, new RegExp(`git -C cloudflare-os checkout --detach ${NEW_PIN}\` and \`git add cloudflare-os\`; ` +
+    `to keep the project's, the same with ${OLD_PIN}`));
+  assert.doesNotMatch(problem, /--theirs/);
+  assert.doesNotMatch(stderr(), /is at the starter's/);
+  assert.match(brief()!, /\(\*\*conflicted\*\*, not checked out: see below\)/);
+});
+
+test("--upstream with a conflicted pin stages nothing, and says to run it again once the merge is concluded", async (t) => {
+  const { commands, json } = await updating(t, {
+    values: { upstream: true },
+    replies: { "git merge": { status: 1 }, "git diff --name-only --diff-filter=U": { stdout: "cloudflare-os\n" } },
+  });
+  assert.ok(!commands().some((command) => command.includes("checkout --detach")));
+  const { problems } = json[0] as { problems: string[] };
+  assert.match(problems.join("\n"), /run `npx cf-os@latest update --upstream` again to stage upstream's main/);
+  assert.deepEqual([pinOf(json).to, pinOf(json).source], [NEW_PIN, "starter"]);
+});
+
+test("a preview left for a conflicted merge reports the starter's pin, and its rerun command survives a shell", async (t) => {
+  const { code, json } = await updating(t, {
+    values: { to: "#796", preview: true },
+    replies: {
+      "git merge": { status: 1 },
+      "git diff --name-only --diff-filter=U": { stdout: "README.md\n" },
+      "git -C cloudflare-os rev-parse FETCH_HEAD": [{ stdout: `${OLDER}\n` }, { stdout: `${UPSTREAM_MAIN}\n` }],
+      [`git -C cloudflare-os merge-base --is-ancestor ${OLDER} ${UPSTREAM_MAIN}`]: { status: 1 },
+    },
+  });
+  assert.equal(code, 1);
+  assert.deepEqual([pinOf(json).to, pinOf(json).source, pinOf(json).preview], [NEW_PIN, "starter", false]);
+  const { problems } = json[0] as { problems: string[] };
+  assert.match(problems.join("\n"), /run `npx cf-os@latest update --to pull\/796 --preview` again/);
+});
+
+test("--to an abbreviated SHA off main, with --preview, is fetched by its full SHA", async (t) => {
+  const { code, commands } = await updating(t, {
+    path: "public", values: { to: "fffffff", preview: true },
+    replies: {
+      "git -C public rev-parse --verify --quiet fffffff^{commit}": { stdout: `${OLDER}\n` },
+      [`git -C public merge-base --is-ancestor ${OLDER} ${UPSTREAM_MAIN}`]: { status: 1 },
+    },
+  });
+  assert.equal(code, 0);
+  assert.ok(commands().some((command) => command.startsWith("git -C public fetch ") && command.endsWith(` ${OLDER}`)));
+  assert.ok(!commands().some((command) => / fetch .* fffffff$/.test(command)));
+});
+
+test("refuses to merge onto a detached HEAD, but moves a pin alone on one", async (t) => {
+  const detached = { "git symbolic-ref -q HEAD": { status: 1 } };
+  const starter = await updating(t, { replies: detached });
+  assert.match(String(starter.code), /HEAD is detached .*Switch to a branch/);
+  assert.ok(!starter.commands().some((command) => command.startsWith("git merge ")));
+  const pin = await updating(t, { path: "public", values: { upstream: true }, replies: detached });
+  assert.equal(pin.code, 0);
+});
+
+test("a submodule checked out at commits nothing else keeps is in the way: updating would leave them", async (t) => {
+  const local = "9".repeat(40);
+  const { code, commands } = await updating(t, {
+    replies: {
+      "git status --porcelain": { stdout: " M cloudflare-os\n" },
+      "git -C cloudflare-os rev-parse HEAD": { stdout: `${local}\n` },
+      [`git -C cloudflare-os merge-base --is-ancestor ${local}`]: { status: 1 },
+      "git -C cloudflare-os for-each-ref --contains": { stdout: "" },
+    },
+  });
+  assert.match(String(code), /cloudflare-os is checked out at 9999999, which no branch or tag of it has[\s\S]*git -C cloudflare-os branch <name> 9999999/);
+  assert.ok(!commands().some((command) => command.includes(" fetch ")));
+});
+
+test("--to a pin without some of the starter's pin's commits lists them: the merged starter code was adapted to them", async (t) => {
+  const staged = "9".repeat(40);
+  const { code, json, stderr, brief } = await updating(t, {
+    values: { to: "v2" },
+    replies: {
+      "git -C cloudflare-os rev-parse FETCH_HEAD": [{ stdout: `${staged}\n` }, { stdout: `${UPSTREAM_MAIN}\n` }],
+      [`git -C cloudflare-os log --format=%h %s ${NEW_PIN} ^${staged} ^${OLD_PIN}`]: { stdout: "ddddddd Three\n" },
+      [`git -C cloudflare-os log --format=%h %s ${NEW_PIN} ^${staged} ^${OLD_PIN} ${CONTRACT}`]: { stdout: "" },
+    },
+  });
+  assert.equal(code, 0);
+  assert.equal(pinOf(json).starterLeftOut, 1);
+  assert.match(stderr(), /Leaves out 1 commit of the starter's pin ddddddd, which the starter's code was adapted to:\n {2}ddddddd Three/);
+  const text = brief()!;
+  assert.match(text, /## Left out of the starter's pin \(1\)\n\nThe merge committed the starter's pin `d+`, and the staged pin replaces it without these:\n\n- `ddddddd` Three/);
+  assert.match(text, /The merged starter code was adapted to the commits under "Left out of the starter's pin"/);
 });

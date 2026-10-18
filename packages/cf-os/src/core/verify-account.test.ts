@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CfUnavailableError, type CloudflareClient } from "./client.ts";
+import { CfAuthError, CfUnavailableError, type CloudflareClient } from "./client.ts";
 import type { DeploymentConfig } from "./deployment-config.ts";
 import { memoryClient, type MemoryAccount } from "./memory-client.ts";
 import { verifyAccount } from "./verify-account.ts";
@@ -53,7 +53,39 @@ test("rejects an application that does not cover the router's hostname", async (
     accessApps: [{ name: "Elsewhere", aud: "aud-1", domain: "other.example.com" }],
   });
   assert.equal(found.length, 1);
-  assert.match(found[0], /"Elsewhere" covers other\.example\.com, not os\.example\.com/);
+  assert.match(found[0], /"Elsewhere" does not gate every path of os\.example\.com.*names other\.example\.com/);
+});
+
+test("rejects an application that gates only a path, or does not gate at all", async () => {
+  for (const app of [
+    { name: "Admin only", aud: "aud-1", domain: "os.example.com/admin" },
+    { name: "Bookmark", aud: "aud-1", type: "bookmark", domain: "os.example.com" },
+  ]) {
+    const found = await problems({ ...matchingAccount(), accessApps: [app] });
+    assert.equal(found.length, 1, app.name);
+    assert.match(found[0], new RegExp(`"${app.name}" does not gate every path of os\\.example\\.com`));
+  }
+  // The whole origin, spelled with a path.
+  assert.deepEqual(await problems({
+    ...matchingAccount(),
+    accessApps: [{ name: "Everything", aud: "aud-1", domain: "os.example.com/*" }],
+  }), []);
+});
+
+test("rejects a wildcard audience when a more specific application is the one Access applies", async () => {
+  const found = await problems({
+    ...matchingAccount(),
+    accessApps: [
+      { name: "Wildcard", aud: "aud-1", domain: "*.example.com" },
+      { name: "Specific", aud: "aud-2", domain: "os.example.com" },
+    ],
+  });
+  assert.equal(found.length, 1);
+  assert.match(found[0], /"Specific" \(AUD aud-2\) names os\.example\.com more specifically than "Wildcard"/);
+  assert.deepEqual(await problems({
+    ...matchingAccount(),
+    accessApps: [{ name: "Wildcard", aud: "aud-1", domain: "*.example.com" }],
+  }), []);
 });
 
 test("rejects an issuer from another team", async () => {
@@ -96,6 +128,21 @@ test("skips, rather than fails, when signed out or the client cannot run", async
     getOrganization: () => Promise.reject(new CfUnavailableError("could not run cf: ENOENT")),
   } satisfies CloudflareClient;
   assert.ok("skipped" in await verifyAccount(unavailable, config, origin));
+});
+
+test("keeps the Access problems it found when the storage reads are not permitted", async () => {
+  const account = { ...matchingAccount(), accessApps: [] };
+  const client = {
+    ...memoryClient(account),
+    listKvNamespaces: () => Promise.reject(new CfAuthError("[10000] Authentication error")),
+  } satisfies CloudflareClient;
+  const result = await verifyAccount(client, config, origin);
+  assert.ok("problems" in result);
+  assert.equal(result.problems.length, 1);
+  assert.match(result.problems[0], /no Access application/);
+  // Nothing found before it: skipped, as for a token that reads nothing.
+  const clean = { ...memoryClient(matchingAccount()), listKvNamespaces: client.listKvNamespaces } satisfies CloudflareClient;
+  assert.ok("skipped" in await verifyAccount(clean, config, origin));
 });
 
 test("fails loudly on an API error that is not about credentials", async () => {

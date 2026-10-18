@@ -48,7 +48,7 @@ import {
 import { parseDeployment, updateDeployment } from "../deployment-file.ts";
 import type { Prompter } from "../prompt.ts";
 import { defaultSpawn, succeeded, type SpawnTool } from "../tools.ts";
-import { resolveAccount, type ResolvedAccount } from "./account.ts";
+import { accountFlag, resolveAccount, type ResolvedAccount } from "./account.ts";
 import { formatReport, pickInstance } from "./import.ts";
 
 const accountIdPattern = /^[a-f\d]{32}$/i;
@@ -125,7 +125,8 @@ async function chooseAccount(
     return account;
   }
   const fromFile = valueAtPath(file, ["accountId"]);
-  if (ctx.flags.account) return { id: ctx.flags.account, isNew: true };
+  const flag = accountFlag(ctx);
+  if (flag !== undefined) return { id: flag, isNew: true };
   if (typeof fromFile === "string" && accountIdPattern.test(fromFile)) return { id: fromFile, isNew: false };
   const id = await prompter.text("Cloudflare account ID", {
     validate: (value) => accountIdPattern.test(value) ? undefined : "32 hexadecimal characters.",
@@ -193,11 +194,24 @@ async function chooseRoute(session: Session, name: string): Promise<RouteChoice>
  * makes sure somebody can sign in at all. Returns the edits for issuer and audience, or none.
  */
 async function setUpAccess(session: Session, target: AccessTarget): Promise<DeploymentEdit[]> {
-  const { prompter, ctx, client } = session;
+  const { ctx, client } = session;
   if (!client) {
     ctx.out.log("cf is signed out, so Access was not set up. Sign in, then run `pnpm cf-os access`.");
     return [];
   }
+  // Access is the one step `cf-os access` can redo alone, so a failure here leaves it for that rather
+  // than losing every other answer: the file is still written, with the access fields left to fill.
+  try {
+    return await accessEditsFor(session, client, target);
+  } catch (error) {
+    if (!(error instanceof CfAuthError || error instanceof CfError)) throw error;
+    ctx.out.log(`Access was not set up: ${error.message}\nFix that, then run \`pnpm cf-os access\`.`);
+    return [];
+  }
+}
+
+async function accessEditsFor(session: Session, client: CloudflareClient, target: AccessTarget): Promise<DeploymentEdit[]> {
+  const { prompter, ctx } = session;
   const found = await lookupAccess(client, target);
   if (found.kind === "no-organization") {
     ctx.out.log(`${found.reason} Skipping Access for now: run \`pnpm cf-os access\` once it exists.`);

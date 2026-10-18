@@ -143,8 +143,10 @@ test("derives the workers.dev subdomain, and reuses an Access application alread
     ...REST,
     ["Deploy now?", false],
   ], account({
-    "zero-trust access applications list": (args) => flag(args, "--domain") === "acme-os.acme-sub.workers.dev"
-      ? [{ name: "Existing", aud: "aud-existing", domain: "acme-os.acme-sub.workers.dev" }] : [],
+    "zero-trust access applications list": [
+      { name: "Unrelated", aud: "aud-other", domain: "other.example.com" },
+      { name: "Existing", aud: "aud-existing", domain: "acme-os.acme-sub.workers.dev" },
+    ],
   }));
   assert.equal(code, 0);
   assert.match(stderr(), /answer on https:\/\/acme-os\.acme-sub\.workers\.dev/);
@@ -274,6 +276,32 @@ test("skips Access, with the setup link, when the account has no Zero Trust orga
   ], account({ "zero-trust organization get": { fail: "[12000] organization not found" } }));
   assert.equal(code, 0);
   assert.match(stderr(), /cloudflare-one\/setup/);
+});
+
+test("writes the other answers when Access fails, leaving it to cf-os access", async (t) => {
+  const failures: Record<string, FakeReply>[] = [
+    { "zero-trust access applications list": { fail: "[10000] Authentication error" } },
+    { "zero-trust access applications create": { fail: "[12130] access.api.error.invalid_request" } },
+  ];
+  for (const failing of failures) {
+    const { code, written, stderr } = await init(t, [
+      ["What are you setting up?", "new"],
+      ["Base name", "acme-os"],
+      ["Where will people reach it?", "workersDev"],
+      ...REST,
+      ...("zero-trust access applications create" in failing ? [["No Access application covers", "create"] as Step] : []),
+    ], account(failing));
+    assert.equal(code, 0);
+    assert.match(stderr(), /Access was not set up: .*\nFix that, then run `pnpm cf-os access`/);
+    const file = written();
+    assert.equal(valueAtPath(file, ["workers", "router", "name"]), "acme-os");
+    assert.equal(valueAtPath(file, ["access", "audience"]), "<ACCESS_AUDIENCE>");
+  }
+});
+
+test("checks --account is an account ID when signed out too", async (t) => {
+  await assert.rejects(init(t, [["Sign in to cf?", false]], { "auth whoami": { authenticated: false } },
+    { flags: { account: "acme" } }), /--account must be a 32-hex account ID, not "acme"/);
 });
 
 test("signed out and declining to sign in, asks for everything it cannot look up", async (t) => {

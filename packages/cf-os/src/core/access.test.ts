@@ -70,6 +70,20 @@ test("reuses an application that already covers the hostname", async () => {
   assert.deepEqual(client.created, [], "created a duplicate");
 });
 
+test("reuses a covering wildcard application, preferring one that names the hostname itself", async () => {
+  const wildcard = { name: "Wildcard", aud: "aud-wildcard", domain: "*.example.com" };
+  const reused = await setupAccess(memoryClient({ organization, accessApps: [wildcard] }), target);
+  assert.ok(reused.kind === "reused" && reused.app === wildcard);
+  const exact = { name: "Exact", aud: "aud-exact", domain: "os.example.com" };
+  const preferred = await setupAccess(memoryClient({ organization, accessApps: [wildcard, exact] }), target);
+  assert.ok(preferred.kind === "reused" && preferred.app === exact);
+});
+
+test("does not reuse an application gating only a path of the hostname", async () => {
+  const client = memoryClient({ organization, accessApps: [{ name: "Admin", aud: "x", domain: "os.example.com/admin" }] });
+  assert.equal((await setupAccess(client, target)).kind, "created");
+});
+
 test("creates one when none covers it", async () => {
   const client = memoryClient({ organization, accessApps: [{ name: "Other", aud: "x", domain: "other.example.com" }] });
   const result = await setupAccess(client, target);

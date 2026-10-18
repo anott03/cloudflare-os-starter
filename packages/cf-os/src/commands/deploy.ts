@@ -138,13 +138,22 @@ async function buildAll(ctx: Context, config: DeploymentConfig): Promise<void> {
 /**
  * Each wave concurrently, the next only once the whole wave has deployed. A failure cancels nothing
  * already running. `--dry-run` uploads nothing for a binding to name, so a check is one wave.
+ *
+ * The very first deploy runs alone. Wrangler refreshes an expired OAuth sign-in from a single-use
+ * refresh token, with no lock: started together, every deploy would spend the same one, and all but
+ * the first would fail, or sign wrangler out. Alone, it refreshes once, and the rest read the result.
  */
 async function deployAll(ctx: Context, config: DeploymentConfig, check: boolean): Promise<void> {
   const waves = check ? [deployOrder(config)] : deployWaves(config);
-  for (const wave of waves) {
+  for (const [index, wave] of waves.entries()) {
     ctx.out.log(`\n${check ? "Dry-running the deploys of" : "Deploying"} ${wave.map((key) => config.workers[key]!.name).join(", ")}.`);
-    await settle(mapConcurrent(wave, concurrencyLimit(),
-      (key) => deployWorker(ctx, PACKAGE_DIRS[key], check ? ["--dry-run"] : [])));
+    const deploy = (key: PackageKey) => deployWorker(ctx, PACKAGE_DIRS[key], check ? ["--dry-run"] : []);
+    let rest = wave;
+    if (!check && index === 0) {
+      await settle(deploy(wave[0]));
+      rest = wave.slice(1);
+    }
+    await settle(mapConcurrent(rest, concurrencyLimit(), deploy));
   }
 }
 
@@ -238,6 +247,11 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
     if (placeholderPaths(parseDeployment(await readFile(path, "utf8"), where)).length) return 1;
     ctx.out.log(`\nContinuing with \`cf-os ${args.command}\`.`);
     config = await readDeployment(ctx, path, where);
+  }
+  // The file's IDs, AUD tag and issuer all belong to its account, so a different one cannot simply
+  // take its place: refused, as \`cf-os access\` refuses it.
+  if (ctx.flags.account && ctx.flags.account.toLowerCase() !== config.accountId.toLowerCase()) {
+    throw new Error(`--account ${ctx.flags.account} is not ${where}'s accountId (${config.accountId}).`);
   }
   const generated = generateConfigs(config, await readBaseConfigs(root));
   reportAiGateway(ctx, config);

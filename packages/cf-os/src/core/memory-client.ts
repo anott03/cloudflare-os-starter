@@ -4,7 +4,6 @@
 import {
   CfAuthError,
   CfError,
-  accessAppCovers,
   workersDevSubdomainOf,
   type CfAccessApp,
   type CfAccount,
@@ -104,10 +103,9 @@ export function memoryClient(account: MemoryAccount): CloudflareClient & {
       if (!account.organization) throw new CfError("[12000] organization not found");
       return account.organization;
     },
-    async listAccessApps(_accountId, filter = {}) {
+    async listAccessApps() {
       gate("listAccessApps");
-      return (account.accessApps ?? []).filter((app) =>
-        (!filter.domain || accessAppCovers(app, filter.domain)) && (!filter.aud || app.aud === filter.aud));
+      return account.accessApps ?? [];
     },
     async createAccessApp(_accountId, body) {
       gate("createAccessApp");

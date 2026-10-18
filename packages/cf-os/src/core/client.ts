@@ -90,14 +90,6 @@ export interface CfWhoami {
   email?: string;
 }
 
-/** Narrowing for {@link CloudflareClient.listAccessApps}, applied by the API. */
-export interface AccessAppFilter {
-  /** Applications whose domain is this hostname. */
-  domain?: string;
-  /** Applications with this AUD tag. */
-  aud?: string;
-}
-
 /**
  * Every Cloudflare read and write the core makes. Methods that act on an account take its ID first;
  * nothing relies on an ambient or cached account.
@@ -121,7 +113,8 @@ export interface CloudflareClient {
   findDnsRecords(accountId: string, zone: string, name: string): Promise<CfDnsRecord[]>;
   /** Throws {@link CfError} when the account has no Zero Trust organization. */
   getOrganization(accountId: string): Promise<CfOrganization>;
-  listAccessApps(accountId: string, filter?: AccessAppFilter): Promise<CfAccessApp[]>;
+  /** Every Access application in the account. */
+  listAccessApps(accountId: string): Promise<CfAccessApp[]>;
   createAccessApp(accountId: string, body: Record<string, unknown>): Promise<CfAccessApp>;
   /** The request {@link createAccessApp} would send, validated but not sent. */
   dryRunCreateAccessApp(accountId: string, body: Record<string, unknown>): Promise<unknown>;
@@ -136,8 +129,8 @@ export function issuerOf(organization: CfOrganization): string | undefined {
   return organization.auth_domain ? `https://${organization.auth_domain}` : undefined;
 }
 
-/** Every hostname an Access application covers, lowercased and without paths. */
-export function accessAppHosts(app: CfAccessApp): string[] {
+/** An application's public destinations, each as a lowercased hostname and the path after it. */
+function accessAppDestinations(app: CfAccessApp): { host: string; path: string }[] {
   const entries = [
     app.domain,
     ...(app.self_hosted_domains ?? []),
@@ -145,20 +138,56 @@ export function accessAppHosts(app: CfAccessApp): string[] {
       .filter((destination) => (destination.type ?? "public") === "public")
       .map((destination) => destination.uri),
   ];
-  return [...new Set(entries
+  return entries
     .filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
-    .map((entry) => entry.replace(/^https?:\/\//, "").split("/")[0].toLowerCase()))];
+    .map((entry) => {
+      const bare = entry.replace(/^https?:\/\//, "");
+      const slash = bare.indexOf("/");
+      return slash < 0
+        ? { host: bare.toLowerCase(), path: "" }
+        : { host: bare.slice(0, slash).toLowerCase(), path: bare.slice(slash) };
+    });
+}
+
+/** Every hostname an Access application names, lowercased and without paths. */
+export function accessAppHosts(app: CfAccessApp): string[] {
+  return [...new Set(accessAppDestinations(app).map((destination) => destination.host))];
 }
 
 /**
- * Whether an Access application covers `host`: one of its hostnames is `host` itself, or a
- * `*.<parent>` wildcard `host` sits under. Lenient about wildcard depth on purpose: this backs a
- * check that fails deploys, and a false "not covered" would block a correct one.
+ * Application types that put Access in front of a hostname. The others (bookmarks, SaaS, the App
+ * Launcher, ...) can name a hostname without gating a single request to it.
  */
-export function accessAppCovers(app: CfAccessApp, host: string): boolean {
+const GATING_TYPES = new Set(["self_hosted", "ssh", "vnc", "rdp"]);
+
+/**
+ * How an Access application gates every path of `host`: `"exact"` through a destination that is
+ * `host` itself, `"wildcard"` through a `*.<parent>` one `host` sits under, `null` when it does not.
+ * Only a destination without a path (or `/`, `/*`) counts: one on `/admin` leaves `/` and `/api`
+ * open. Lenient about wildcard depth on purpose: this backs a check that fails deploys, and a false
+ * "not covered" would block a correct one.
+ */
+export function accessAppCoverage(app: CfAccessApp, host: string): "exact" | "wildcard" | null {
+  if (!GATING_TYPES.has(app.type ?? "self_hosted")) return null;
   const target = host.toLowerCase();
-  return accessAppHosts(app).some((entry) =>
-    entry === target || entry.startsWith("*.") && target.endsWith(entry.slice(1)));
+  const whole = accessAppDestinations(app).filter((destination) => ["", "/", "/*"].includes(destination.path));
+  if (whole.some((destination) => destination.host === target)) return "exact";
+  return whole.some((destination) =>
+    destination.host.startsWith("*.") && target.endsWith(destination.host.slice(1))) ? "wildcard" : null;
+}
+
+/** Whether an Access application gates every path of `host`: see {@link accessAppCoverage}. */
+export function accessAppCovers(app: CfAccessApp, host: string): boolean {
+  return accessAppCoverage(app, host) !== null;
+}
+
+/**
+ * The application Access applies to `host` out of `apps`: one naming it exactly ahead of a
+ * wildcard, as Access itself prefers the more specific. Undefined when none gates every path.
+ */
+export function accessAppFor(apps: CfAccessApp[], host: string): CfAccessApp | undefined {
+  return apps.find((app) => accessAppCoverage(app, host) === "exact") ??
+    apps.find((app) => accessAppCoverage(app, host) === "wildcard");
 }
 
 /**

@@ -5,7 +5,7 @@
 ## Which Path You Are On
 
 - **Default: the starter's pin.** The starter has already adapted `packages/cf-os` and its shared code to that pin. The work is mostly merge conflicts in files the operator owns (`deployment.jsonc`, branding, docs they edited), plus the operator's own Gatekeepers, such as `packages/custom-gatekeeper`, which the starter cannot adapt for them.
-- **`--upstream`: upstream's `main`, staged and not committed.** The starter has not seen this pin yet, so everything below may apply to `packages/cf-os` itself as well. Follow [upgrade-and-rollback.md](upgrade-and-rollback.md) before committing the pin.
+- **`--upstream`: upstream's `main`, staged and not committed,** on top of the starter merge, which is committed. The starter has not seen this pin yet, so everything below may apply to `packages/cf-os` itself as well. Follow [upgrade-and-rollback.md](upgrade-and-rollback.md) before committing the pin.
 - **Not a starter project: the pin alone.** A repository with its own config generation, build and deploy scripts that pins Cloudflare OS as a submodule, wherever it keeps it. There is no starter merge, only upstream's `main`, staged and not committed. The generic sections below apply as written. Sections marked *(starter)* describe the starter's own machinery (`generateConfigs()`, `PACKAGE_DIRS`, the new-Gatekeeper list, `buildCommands()`): map each onto this repository's equivalent. Follow [upgrade-and-rollback.md](upgrade-and-rollback.md) the same way before committing the pin.
 
 ## Most Updates Need Nothing Beyond The Merge: Prove It

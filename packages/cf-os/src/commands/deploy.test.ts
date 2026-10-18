@@ -79,6 +79,31 @@ test("once init has configured the file, carries on with the deploy", async (t) 
   assert.doesNotMatch(harness.stderr(), /Deploy now\?|Next:/);
 });
 
+test("refuses an --account other than the file's, before reading the account or building", async (t) => {
+  const root = installedProject(t);
+  const filled = TEMPLATE
+    .replace("<CLOUDFLARE_ACCOUNT_ID>", FAKE_ACCOUNT)
+    .replace(/<([A-Z_]+)_WORKER_NAME>/g, (_, name: string) => `acme-${name.toLowerCase().replace(/_/g, "-")}`)
+    .replace("<TEAM_NAME>", "acme")
+    .replace("<ACCESS_AUDIENCE>", "aud-1")
+    .replace("<ADMIN_EMAIL>", "me@example.com")
+    .replace("<ORGANIZATION_DISPLAY_NAME>", "Acme")
+    .replace("<ORGANIZATION_GUIDANCE>", "Be kind.");
+  writeFileSync(join(root, "deployment.jsonc"), filled);
+  const cf = fakeCf({});
+  const other = "fedcba9876543210fedcba9876543210";
+  for (const command of ["check", "deploy"]) {
+    const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), flags: { account: other } });
+    await assert.rejects(run({ command, values: {}, positionals: [] }, harness.ctx),
+      new RegExp(`--account ${other} is not deployment\\.jsonc's accountId \\(${FAKE_ACCOUNT}\\)`));
+  }
+  assert.deepEqual(cf.calls, []);
+  // The same account, in another case, is the file's.
+  const same = testContext({ root, client: cfClient({ spawn: cf.spawn }), flags: { account: FAKE_ACCOUNT.toUpperCase() } });
+  await assert.rejects(run({ command: "check", values: {}, positionals: [] }, same.ctx),
+    /cloudflare-os[\\/]packages[\\/][\w-]+[\\/]wrangler\.jsonc/);
+});
+
 test("refuses before reading the file when the submodule is not installed", async (t) => {
   const harness = testContext({ root: scratchProject(t, TEMPLATE), prompter: scriptedPrompter([]) });
   await assert.rejects(run({ command: "check", values: {}, positionals: [] }, harness.ctx), /not initialized/);

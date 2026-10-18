@@ -5,7 +5,10 @@
 
 import { spawnSync } from "node:child_process";
 
-/** One external command, run in `cwd`. `capture` returns its output instead of showing it. */
+/**
+ * One external command, run in `cwd`. `capture` returns its output instead of showing it. Shown, its
+ * stdout goes to stderr with the rest: stdout carries only a command's results (`update`'s JSON).
+ */
 export type SpawnTool = (
   command: string,
   args: string[],
@@ -24,7 +27,7 @@ export function defaultSpawn(): SpawnTool {
       cwd,
       env: env ?? process.env,
       encoding: "utf8",
-      stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
+      stdio: capture ? ["ignore", "pipe", "pipe"] : ["inherit", 2, "inherit"],
       // On Windows, pnpm on PATH is a `.cmd` shim Node will not spawn without a shell. Safe here:
       // every argument passed to pnpm is a fixed word or the person's own `--profile`, and paths go
       // in `cwd`, not argv.

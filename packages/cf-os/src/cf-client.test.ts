@@ -5,7 +5,9 @@ import {
   CfAuthError,
   CfError,
   CfUnavailableError,
+  accessAppCoverage,
   accessAppCovers,
+  accessAppFor,
   accessAppHosts,
   issuerOf,
   workersDevSubdomainOf,
@@ -89,6 +91,21 @@ test("lists every page, not just the first", () => {
   ]);
 });
 
+test("pages accounts within the API's 50-per-page ceiling", async () => {
+  const accounts = Array.from({ length: 120 }, (_, i) => ({ id: `a${i}`, name: `Account ${i}` }));
+  const { spawn, calls } = fakeCf({ "accounts list": accounts });
+  assert.equal((await cfClient({ spawn }).listAccounts()).length, 120);
+  // Past the ceiling, a capped page of 50 would read as the last one.
+  assert.deepEqual(calls.map((call) => flag(call.args, "--per-page")), ["50", "50", "50"]);
+});
+
+test("lists Access applications unfiltered, so a covering wildcard one is among them", async () => {
+  const apps = [{ name: "w", aud: "a", domain: "*.example.com" }];
+  const { spawn, calls } = fakeCf({ "zero-trust access applications list": apps });
+  assert.deepEqual(await cfClient({ spawn }).listAccessApps(FAKE_ACCOUNT), apps);
+  assert.ok(!calls[0].args.includes("--domain") && !calls[0].args.includes("--exact"));
+});
+
 test("reads R2's wrapped bucket list", () => {
   const { spawn } = fakeCf({ "r2 buckets list": { buckets: [{ name: "a" }, { name: "b" }] } });
   assert.deepEqual(listR2Buckets({ accountId: FAKE_ACCOUNT, spawn }), ["a", "b"]);
@@ -115,19 +132,31 @@ test("derives the issuer from the team domain", () => {
   assert.equal(issuerOf({}), undefined);
 });
 
-test("knows which hostnames an Access application covers", () => {
+test("knows which hostnames an Access application gates, and on which paths", () => {
   const app = {
     domain: "os.example.com/admin",
     self_hosted_domains: ["os.example.com/admin", "*.preview.example.com"],
-    destinations: [{ type: "public", uri: "OS2.example.com" }, { type: "private", uri: "10.0.0.1" }],
+    destinations: [{ type: "public", uri: "https://OS2.example.com/" }, { type: "private", uri: "10.0.0.1" }],
   };
   assert.deepEqual(accessAppHosts(app), ["os.example.com", "*.preview.example.com", "os2.example.com"]);
-  assert.ok(accessAppCovers(app, "os.example.com"));
-  assert.ok(accessAppCovers(app, "OS2.example.com"));
-  assert.ok(accessAppCovers(app, "pr-1.preview.example.com"));
+  // `/admin` alone leaves the rest of the origin open.
+  assert.ok(!accessAppCovers(app, "os.example.com"));
+  assert.equal(accessAppCoverage(app, "OS2.example.com"), "exact");
+  assert.equal(accessAppCoverage(app, "pr-1.preview.example.com"), "wildcard");
   assert.ok(!accessAppCovers(app, "preview.example.com"));
   assert.ok(!accessAppCovers(app, "other.example.com"));
   assert.ok(!accessAppCovers({}, "os.example.com"));
+  assert.ok(accessAppCovers({ domain: "os.example.com/*" }, "os.example.com"));
+  assert.ok(accessAppCovers({ type: "ssh", domain: "os.example.com" }, "os.example.com"));
+  assert.ok(!accessAppCovers({ type: "bookmark", domain: "os.example.com" }, "os.example.com"));
+});
+
+test("picks the application Access applies: an exact hostname ahead of a wildcard", () => {
+  const wildcard = { name: "w", domain: "*.example.com" };
+  const exact = { name: "e", domain: "os.example.com" };
+  assert.equal(accessAppFor([wildcard, exact], "os.example.com"), exact);
+  assert.equal(accessAppFor([wildcard], "os.example.com"), wildcard);
+  assert.equal(accessAppFor([{ domain: "os.example.com/admin" }], "os.example.com"), undefined);
 });
 
 test("pages zones too, and lists only the account's active ones", async () => {
@@ -135,7 +164,8 @@ test("pages zones too, and lists only the account's active ones", async () => {
   const { spawn, calls } = fakeCf({ "zones list": zones });
   const listed = await cfClient({ spawn }).listZones(FAKE_ACCOUNT);
   assert.equal(listed.length, 150);
-  assert.equal(calls.length, 2);
+  // 50 at a time, the most zones list returns, and an empty fourth page to end on.
+  assert.deepEqual(calls.map((call) => flag(call.args, "--page")), ["1", "2", "3", "4"]);
   // `zones list` lists every zone the credentials reach unless told which account.
   assert.equal(flag(calls[0].args, "--account-id"), FAKE_ACCOUNT);
   assert.equal(flag(calls[0].args, "--status"), "active");

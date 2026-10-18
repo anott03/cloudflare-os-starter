@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { cli, type CliDeps } from "./main.ts";
+import { cli, invocationDir, type CliDeps } from "./main.ts";
 import { DELEGATION_SENTINEL, type SpawnDelegate } from "./project.ts";
 import { scratchProject, TEMPLATE } from "./test-support.ts";
 
@@ -46,11 +46,15 @@ function tempDir(t: { after: (fn: () => void) => void }): string {
   return dir;
 }
 
-/** A scratch project with its own copy of the CLI (an empty stand-in). */
-function projectWithLocalCopy(t: Parameters<typeof scratchProject>[0]): { root: string; local: string } {
+/** A scratch project with its own copy of the CLI (an empty stand-in), installed. */
+function projectWithLocalCopy(
+  t: Parameters<typeof scratchProject>[0],
+  dir = "cf-os",
+): { root: string; local: string } {
   const root = scratchProject(t, TEMPLATE);
-  const local = join(root, "packages", "cf-os", "src", "main.ts");
+  const local = join(root, "packages", dir, "src", "main.ts");
   mkdirSync(dirname(local), { recursive: true });
+  mkdirSync(join(root, "packages", dir, "node_modules"));
   writeFileSync(local, "");
   return { root, local };
 }
@@ -110,12 +114,37 @@ test("hands every command to the project's own copy, from any subdirectory", asy
 });
 
 test("hands off to a copy at packages/cfos, where projects from before the rename keep it", async (t) => {
-  const root = scratchProject(t, TEMPLATE);
-  const legacy = join(root, "packages", "cfos", "src", "main.ts");
-  mkdirSync(dirname(legacy), { recursive: true });
-  writeFileSync(legacy, "");
+  const { root, local: legacy } = projectWithLocalCopy(t, "cfos");
   const { spawned } = await run(t, ["check"], { cwd: root });
   assert.deepEqual(spawned.map((entry) => entry.args), [[legacy, "check"]]);
+});
+
+test("hands off what only the project's copy may know: other commands, options and help", async (t) => {
+  const { root, local } = projectWithLocalCopy(t);
+  for (const argv of [["frobnicate"], ["check", "--newer-option"], ["deploy", "--help"]]) {
+    const { code, spawned, log } = await run(t, argv, { cwd: root });
+    assert.equal(code, 0, argv.join(" "));
+    assert.deepEqual(spawned.map((entry) => entry.args), [[local, ...argv]]);
+    assert.equal(log, "");
+  }
+});
+
+test("says to install a project whose dependencies are not, rather than crash in its copy", async (t) => {
+  const { root } = projectWithLocalCopy(t);
+  rmSync(join(root, "packages", "cf-os", "node_modules"), { recursive: true });
+  const { code, log, spawned } = await run(t, ["check"], { cwd: root });
+  assert.equal(code, 1);
+  assert.match(log, /is not installed yet: run `pnpm install` there/);
+  assert.deepEqual(spawned, []);
+});
+
+test("resolves paths from where a package-manager script was started, when that is below it", () => {
+  const root = join(tmpdir(), "project");
+  const docs = join(root, "docs");
+  assert.equal(invocationDir(root, { npm_lifecycle_event: "cf-os", INIT_CWD: docs }), docs);
+  assert.equal(invocationDir(root, { INIT_CWD: docs }), root, "not started by a script");
+  assert.equal(invocationDir(root, { npm_lifecycle_event: "cf-os", INIT_CWD: tmpdir() }), root, "above it");
+  assert.equal(invocationDir(root, { npm_lifecycle_event: "cf-os", INIT_CWD: root }), root);
 });
 
 test("runs update in the copy that was started, even with the project's own present", async (t) => {
@@ -192,6 +221,9 @@ test("the packed path never reaches @gadgets/scripts", () => {
     .filter((file) => file.startsWith("commands/")).toSorted(),
     ["commands/scaffold.ts", "commands/update.ts"]);
   assert.deepEqual([...packages].filter((name) => !name.startsWith("node:")), ["@clack/prompts"]);
+  // What a global install gets is exactly that: everything else is the project copy's, from its own install.
+  const manifest = JSON.parse(readFileSync(join(SRC, "..", "package.json"), "utf8"));
+  assert.deepEqual(Object.keys(manifest.dependencies), ["@clack/prompts"]);
 });
 
 test("the core is pure: no CLI shell, no cf subprocess, no prompts", () => {

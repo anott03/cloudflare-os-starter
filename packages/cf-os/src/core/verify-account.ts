@@ -10,6 +10,7 @@ import {
   CfAuthError,
   CfUnavailableError,
   accessAppCovers,
+  accessAppFor,
   accessAppHosts,
   issuerOf,
   type CloudflareClient,
@@ -28,15 +29,20 @@ export async function verifyAccount(
   config: DeploymentConfig,
   origin: string,
 ): Promise<AccountCheck> {
+  // Signed out, or `cf` missing or broken: not the deployment's fault either way.
+  const unchecked = (error: unknown) => error instanceof CfAuthError || error instanceof CfUnavailableError;
+  let access: string[];
   try {
-    return {
-      problems: [...await checkAccess(client, config, origin), ...await checkStorage(client, config)],
-    };
+    access = await checkAccess(client, config, origin);
   } catch (error) {
-    // Signed out, or `cf` missing or broken: not the deployment's fault either way.
-    if (error instanceof CfAuthError || error instanceof CfUnavailableError) {
-      return { skipped: error.message };
-    }
+    if (unchecked(error)) return { skipped: error.message };
+    throw error;
+  }
+  try {
+    return { problems: [...access, ...await checkStorage(client, config)] };
+  } catch (error) {
+    // A token that reads Access but not storage: what Access showed is still wrong.
+    if (unchecked(error)) return access.length ? { problems: access } : { skipped: error.message };
     throw error;
   }
 }
@@ -59,19 +65,26 @@ async function checkAccess(client: CloudflareClient, config: DeploymentConfig, o
       `${issuer}. The Workshop would reject every Access token it is sent.`);
   }
 
-  const apps = (await client.listAccessApps(config.accountId, { aud: config.access.audience }))
-    .filter((app) => app.aud === config.access.audience);
+  const all = await client.listAccessApps(config.accountId);
+  const apps = all.filter((app) => app.aud === config.access.audience);
+  const applied = accessAppFor(all, host);
   if (!apps.length) {
     problems.push(
       `access.audience: no Access application in account ${config.accountId} has AUD tag ` +
       `${config.access.audience}. Copy it from the application protecting ${host}, or run ` +
       "`pnpm cf-os access` to find or create it.");
-  } else if (!apps.some((app) => accessAppCovers(app, host))) {
+  } else if (applied && applied.aud !== config.access.audience && apps.some((app) => accessAppCovers(app, host))) {
     problems.push(
-      `access.audience: Access application "${apps[0].name}" covers ` +
-      `${accessAppHosts(apps[0]).join(", ") || "no hostname"}, not ${host}, which is where the ` +
-      "router answers. Requests would reach the Workshop without an Access token. Add the hostname " +
-      "to the application, or point access.audience at the one that covers it.");
+      `access.audience: Access application "${applied.name}" (AUD ${applied.aud}) names ${host} more ` +
+      `specifically than "${apps[0].name}" does, so it is the one Access applies there, and the Workshop ` +
+      "would reject the tokens it issues. Point access.audience at it, or remove the hostname from it.");
+  } else if (!applied || applied.aud !== config.access.audience) {
+    problems.push(
+      `access.audience: Access application "${apps[0].name}" does not gate every path of ${host}, ` +
+      "which is where the router answers: it names " +
+      `${accessAppHosts(apps[0]).join(", ") || "no hostname"}${apps[0].type ? `, as a ${apps[0].type} application` : ""}. ` +
+      "Requests would reach the Workshop without an Access token. Add the hostname, with no path, " +
+      "to a self-hosted application, or point access.audience at the one that has it.");
   }
   return problems;
 }

@@ -17,6 +17,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import {
@@ -214,6 +215,18 @@ export interface CliDeps {
   client?: Context["client"];
 }
 
+/**
+ * The directory the command was typed in. A package-manager script (`pnpm cf-os` from a
+ * subdirectory) runs from its package's directory and records the one it was started from in
+ * `INIT_CWD`; that one is taken only when it lies below, so an unrelated outer script's is ignored.
+ */
+export function invocationDir(cwd: string, env: NodeJS.ProcessEnv): string {
+  const started = env.npm_lifecycle_event ? env.INIT_CWD : undefined;
+  if (!started) return cwd;
+  const below = relative(cwd, started);
+  return below && !below.startsWith("..") && !isAbsolute(below) ? started : cwd;
+}
+
 function samePath(a: string, b: string): boolean {
   try {
     return realpathSync(a) === realpathSync(b);
@@ -232,6 +245,27 @@ export async function cli(argv: string[], deps: CliDeps): Promise<number> {
     else deps.out.log(usage());
     return wantsHelp ? 0 : 1;
   }
+  // Handed off before anything here reads the arguments: the project's copy may be another version,
+  // with commands, options or help this one does not have.
+  const root = findProjectRoot(deps.cwd);
+  if (root && COMMANDS[name]?.delegates !== false && !deps.env[DELEGATION_SENTINEL]) {
+    const local = localEntry(root);
+    if (!existsSync(local)) {
+      deps.out.log(
+        `${root} has no packages/cf-os to hand off to: it predates the cf-os CLI. Bring it up to date ` +
+        "with `npx cf-os@latest update`, or use the scripts in its own package.json.");
+      return 1;
+    }
+    if (!samePath(local, deps.self)) {
+      // Its dependencies come from the project's install, which a fresh clone has not had yet.
+      if (!existsSync(join(dirname(dirname(local)), "node_modules"))) {
+        deps.out.log(`${root} is not installed yet: run \`pnpm install\` there, then this again.`);
+        return 1;
+      }
+      return delegate(local, argv, deps);
+    }
+  }
+
   const spec = COMMANDS[name];
   if (!spec) {
     deps.out.log(`Unknown command "${name}".\n\n${usage()}`);
@@ -259,17 +293,6 @@ export async function cli(argv: string[], deps: CliDeps): Promise<number> {
     return 0;
   }
 
-  const root = findProjectRoot(deps.cwd);
-  if (root && spec.delegates !== false && !deps.env[DELEGATION_SENTINEL]) {
-    const local = localEntry(root);
-    if (existsSync(local) && !samePath(local, deps.self)) return delegate(local, argv, deps);
-    if (!existsSync(local)) {
-      deps.out.log(
-        `${root} has no packages/cf-os to hand off to: it predates the cf-os CLI. Bring it up to date ` +
-        "with `npx cf-os@latest update`, or use the scripts in its own package.json.");
-      return 1;
-    }
-  }
   if (!root && !spec.anywhere) {
     deps.out.log(
       "Not in a Cloudflare OS project: no directory here or above holds deployment.jsonc beside " +
@@ -321,7 +344,7 @@ if (process.argv[1] && samePath(process.argv[1], self)) {
     process.stdout.write(`${version()}\n`);
   } else {
     process.exitCode = await cli(argv, {
-      cwd: process.cwd(),
+      cwd: invocationDir(process.cwd(), process.env),
       env: process.env,
       self,
       out: consoleOutput(),

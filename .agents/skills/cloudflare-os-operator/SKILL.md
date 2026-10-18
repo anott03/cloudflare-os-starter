@@ -51,12 +51,12 @@ pnpm cf-os check
 pnpm cf-os deploy
 ```
 
-Confirm them against the checkout before running them (`pnpm cf-os --help` lists the commands). Always use `pnpm`, never `npm` or `yarn`. `pnpm cf-os check` and `pnpm cf-os deploy` are aliases for the last two.
+Confirm them against the checkout before running them (`pnpm cf-os --help` lists the commands). Always use `pnpm`, never `npm` or `yarn`; the one exception is `npx cf-os@latest update`, which fetches the newest published CLI. `pnpm check` and `pnpm deploy` are aliases for the last two.
 
 Against the account, the commands split as follows:
 
 - **Read-only:** `pnpm cf-os import`, `pnpm cf-os check`, `pnpm cf-os access --dry-run`, and `pnpm exec cf ... list`/`get`. They suit the inventory step.
-- **Local writes only:** `pnpm cf-os import --out <path>` writes a local file (pointed at `deployment.jsonc`, it edits that in place), so treat it like any other edit to approved configuration. `npx cf-os@latest update` merges the starter's `main` (a git merge, left conflicted if it conflicts), checks the submodule out at the starter's pin, runs `pnpm install`, and writes `.cf-os/update.md`; follow that brief and [references/updating.md](references/updating.md). Its `--upstream` stages an unreviewed pin, which needs the upgrade gate in [references/upgrade-and-rollback.md](references/upgrade-and-rollback.md) before it is committed.
+- **Local writes only:** `pnpm cf-os import --out <path>` writes a local file (pointed at `deployment.jsonc`, it edits that in place), so treat it like any other edit to approved configuration. `npx cf-os@latest update` merges the starter's `main` (a git merge, left conflicted if it conflicts), checks the submodule out at the starter's pin, runs `pnpm install`, and writes `.cf-os/update.md`; follow that brief and [references/updating.md](references/updating.md). Its `--upstream` merges the starter's `main` the same way, committed, then stages an unreviewed pin, which needs the upgrade gate in [references/upgrade-and-rollback.md](references/upgrade-and-rollback.md) before it is committed.
 - **Mutating:** `pnpm cf-os access` without `--dry-run` can create an Access application. `pnpm cf-os init` reads the account and writes `deployment.jsonc`, but its Access step can create an Access application and a One-time PIN identity provider when the operator chooses to, and once the file is complete it offers to run `pnpm cf-os deploy`. Outside a project, `cf-os init <dir>` can also create a private GitHub repository and push to it. `pnpm cf-os deploy` deploys every Worker without asking for confirmation. Each needs approval like any other remote mutation.
 
 `pnpm cf-os init` is interactive and refuses without a terminal. Agents should use `import`, `access`, direct edits to `deployment.jsonc` and an approved `pnpm cf-os deploy` instead, which take every answer as a flag or from the file.
