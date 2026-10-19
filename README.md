@@ -19,14 +19,15 @@
 > [!IMPORTANT]
 > Cloudflare OS is early-access software. Pin upstream releases, review changes, and verify the trust boundary before every production upgrade.
 
-## Four steps
+## Quick start
 
-1. Get the project: fork or clone this repository, then run `pnpm install`. If you have not cloned it, `npx cf-os init my-os` does that for you: it clones this starter, installs, offers to create a private GitHub repository for it and push there, and carries on with step 2.
-2. Configure and deploy: `pnpm cf-os init` offers the sign-ins, asks for the Worker names, hostname, admin emails and AI Gateway with defaults read from your account, sets up the Access application, writes `deployment.jsonc`, and offers to deploy. Commit `deployment.jsonc`: it belongs in your repository.
-3. Deploy later changes with `pnpm cf-os deploy`. `pnpm cf-os check` runs the same checks and dry-runs the deploy.
-4. Open `/admin` and set the site name, logo, and accent color; branding needs no redeploy.
+With [Node.js 24.19 or newer](https://nodejs.org/) and [pnpm 11.17](https://pnpm.io/installation) installed:
 
-[Deploy](#deploy) and [Customization](#customization) expand each step. Everything else on this page is optional reading.
+```sh
+npx cf-os init my-os
+```
+
+It clones this starter, installs it, offers to create a private GitHub repository and push there, then configures sign-in, Workers and AI Gateway, writes `deployment.jsonc`, and offers to deploy. [Deploy](#deploy) covers each step and the manual route, and [Customization](#customization) what to change afterwards. Everything else on this page is optional reading.
 
 ## Overview
 
@@ -62,7 +63,15 @@ Anything past that needs your own code or settings, which is what this repositor
 
 ### 1. Prepare the workspace
 
-Install [Node.js 24.19 or newer](https://nodejs.org/) (the `cf-os` CLI is TypeScript run directly by `node`) and [pnpm 11.17](https://pnpm.io/installation) (`corepack enable` provides it). Then fork or clone this repository, install, and start step 2:
+Install [Node.js 24.19 or newer](https://nodejs.org/) (the `cf-os` CLI is TypeScript run directly by `node`) and [pnpm 11.17](https://pnpm.io/installation) (`corepack enable` provides it). Then one command sets up the project and starts step 2:
+
+```sh
+npx cf-os init my-os
+```
+
+It clones this starter with its history and its `cloudflare-os` submodule, renames the `origin` remote to `starter`, runs `pnpm install`, offers to create a private GitHub repository with the [GitHub CLI](https://cli.github.com/) (`gh`) and push to it, signing you in to `gh` first if needed, and starts `pnpm cf-os init`. Without `gh`, it prints the commands to add a repository by hand. `--template <url|path>` and `--ref <branch>` clone a fork or a branch instead.
+
+To do the same by hand, fork or clone this repository, install, and start step 2:
 
 ```sh
 git clone --recurse-submodules https://github.com/cloudflare/cloudflare-os-starter my-os
@@ -71,15 +80,15 @@ pnpm install
 pnpm cf-os init
 ```
 
-`deployment.jsonc` belongs in your repository once it is filled in. A fork of this public repository has to stay public, so for a private one, create an empty private repository and push the clone there: `git remote rename origin starter`, `git remote add origin <url>`, `git push -u origin HEAD`. `npx cf-os@latest update` then brings in starter updates.
-
-If you have not cloned it yet, one command does all of that:
+`deployment.jsonc` belongs in your repository once it is filled in. A fork of this public repository has to stay public, so for a private one, create an empty private repository and push the clone there:
 
 ```sh
-npx cf-os init my-os
+git remote rename origin starter
+git remote add origin <url>
+git push -u origin HEAD
 ```
 
-It clones this starter with its history and its `cloudflare-os` submodule, renames the `origin` remote to `starter`, runs `pnpm install`, offers to create a private GitHub repository with the [GitHub CLI](https://cli.github.com/) (`gh`) and push to it, signing you in to `gh` first if needed, and starts `pnpm cf-os init`. Without `gh`, it prints the commands to add a repository by hand. `--template <url|path>` and `--ref <branch>` clone a fork or a branch instead.
+Either way, `npx cf-os@latest update` then brings in starter updates.
 
 `pnpm install` installs the submodule's own workspace too, from a `postinstall` hook. If you install with `--ignore-scripts`, run `pnpm cf-os install` afterwards; `pnpm cf-os check` says so if you forget.
 
