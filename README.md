@@ -63,38 +63,17 @@ Anything past that needs your own code or settings, which is what this repositor
 
 ### 1. Prepare the workspace
 
-Install [Node.js 24.19 or newer](https://nodejs.org/) (the `cf-os` CLI is TypeScript run directly by `node`) and [pnpm 11.17](https://pnpm.io/installation) (`corepack enable` provides it). Then one command sets up the project and starts step 2:
+Install [Node.js 24.19 or newer](https://nodejs.org/) (the `cf-os` CLI is TypeScript run directly by `node`) and [pnpm 11.17](https://pnpm.io/installation), then create the project:
 
 ```sh
 npx cf-os init my-os
 ```
 
-It clones this starter with its history and its `cloudflare-os` submodule, renames the `origin` remote to `starter`, runs `pnpm install`, offers to create a private GitHub repository with the [GitHub CLI](https://cli.github.com/) (`gh`) and push to it, signing you in to `gh` first if needed, and starts `pnpm cf-os init`. Without `gh`, it prints the commands to add a repository by hand. `--template <url|path>` and `--ref <branch>` clone a fork or a branch instead.
-
-To do the same by hand, fork or clone this repository, install, and start step 2:
-
-```sh
-git clone --recurse-submodules https://github.com/cloudflare/cloudflare-os-starter my-os
-cd my-os
-pnpm install
-pnpm cf-os init
-```
-
-`deployment.jsonc` belongs in your repository once it is filled in. A fork of this public repository has to stay public, so for a private one, create an empty private repository and push the clone there:
-
-```sh
-git remote rename origin starter
-git remote add origin <url>
-git push -u origin HEAD
-```
-
-Either way, `npx cf-os@latest update` then brings in starter updates.
+It clones this starter and its submodule, installs, offers to create a private GitHub repository for it, and starts `pnpm cf-os init` (step 2). To clone by hand instead, run `git clone --recurse-submodules https://github.com/cloudflare/cloudflare-os-starter my-os`, `pnpm install` and `pnpm cf-os init`. A fork of this public repository has to stay public; for a private one, push the clone to an empty private repository instead. Either way, `deployment.jsonc` belongs in your repository, and `npx cf-os@latest update` brings in starter updates.
 
 `pnpm install` installs the submodule's own workspace too, from a `postinstall` hook. If you install with `--ignore-scripts`, run `pnpm cf-os install` afterwards; `pnpm cf-os check` says so if you forget.
 
-Two sign-ins, because two tools talk to Cloudflare; `pnpm cf-os init` offers each one when it is needed, or run `pnpm exec cf auth login` and `pnpm exec wrangler login` yourself. [Wrangler](https://developers.cloudflare.com/workers/wrangler/commands/#login) deploys the Workers. The `cf` CLI looks things up and sets up Access: `pnpm cf-os init` reads your zones, AI Gateways, email and workers.dev subdomain through it to offer defaults, `pnpm cf-os access` and `pnpm cf-os import` run on it, and `pnpm cf-os check` uses it to confirm the Access application and storage IDs in `deployment.jsonc` exist in the account. `cf` is optional. Without it, `init` asks you to type those values, `check` skips the account checks with a one-line notice, and you do the Access steps below by hand. Instead of logging in, you can set `CLOUDFLARE_API_TOKEN` to a token with Access: Apps and Policies Edit and Access: Organizations, Identity Providers, and Groups Read (Edit, for `init` to add a One-time PIN provider), plus Read on Workers Scripts, Workers KV Storage, Workers R2 Storage, AI Gateway, Zone and DNS.
-
-[`packages/cf-os`](packages/cf-os/README.md) lists every `cf-os` command and flag. `pnpm check` and `pnpm deploy` still work as aliases.
+`pnpm cf-os init` offers the [Wrangler](https://developers.cloudflare.com/workers/wrangler/commands/#login) sign-in, which deploys, and the `cf` CLI's, which reads defaults from your account and sets up Access. [`packages/cf-os`](packages/cf-os/README.md) lists every command and flag, and what `cf` is needed for.
 
 Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](https://developers.cloudflare.com/kv/), [R2](https://developers.cloudflare.com/r2/), [Browser Rendering](https://developers.cloudflare.com/browser-rendering/), and [Dynamic Worker Loaders](https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/). It also needs [Workers AI](https://developers.cloudflare.com/workers-ai/) and [AI Gateway](https://developers.cloudflare.com/ai-gateway/), which the default model catalog runs on. Web Search needs them too, through the account's `default` gateway when the catalog is off, so they are dispensable only with the catalog off and Web Search disabled in `/admin`. [Artifacts](https://developers.cloudflare.com/artifacts/) is optional.
 
@@ -102,18 +81,12 @@ Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](h
 
 Cloudflare OS supports several sign-in methods. This starter deploys [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) mode, which verifies identity before a request reaches the Worker. See [Sign-in methods](docs/customization.md#sign-in-methods) for the alternatives and what switching involves.
 
-Run `pnpm cf-os init` and choose **A new deployment**. It asks, with defaults:
+`pnpm cf-os init` does all of this: it asks for Worker names, a hostname, admin emails and the AI Gateway, with defaults read from your account, finds or creates the Access application, and writes `deployment.jsonc`. To do it by hand:
 
-1. A base name. The seven Worker names derive from it the way the hosted deploy names them (`<name>-backend`, `<name>-gk-context`, ...), and it stops if any of them is already taken in the account.
-2. Where people reach it: a hostname in one of your [active zones](https://developers.cloudflare.com/dns/zone-setups/), `os.<zone>` by default, or a `workers.dev` evaluation address. It warns if the hostname already has a DNS record, which would block the custom domain.
-3. The admin emails, defaulting to the one `cf` is signed in as, then the AI Gateway and model providers, then the example custom Gatekeeper's text.
-4. Access. It reuses the [self-hosted Access application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) that already names the hostname, or offers to create one that admits exactly the admins. A wildcard application covering it (`*.example.com`) is offered too, but not by default: its policy, not the admins, decides who gets in. If the Zero Trust organization has no identity provider, nobody could sign in, so it offers to add a One-time PIN provider.
-
-It writes every answer into `deployment.jsonc` in place, comments intact (`--out <path>` writes a copy instead). Storage, error reporting and observability keep the template's defaults. Every control is annotated in the file, so editing it by hand afterwards is fine. When nothing is left as a placeholder, it offers the Wrangler sign-in if needed and then asks **Deploy now?**; yes runs `pnpm cf-os deploy` (step 3) on the file it just wrote.
-
-Without a terminal, or to do it by hand, fill in [`deployment.jsonc`](deployment.jsonc)'s placeholders except `access.issuer` and `access.audience`, then run `pnpm cf-os access`. It finds or creates the application the same way and writes the team's issuer and the application's audience into the file. Add `--dry-run` first to see the request without sending it. To admit more people than the admins (an email domain, an identity-provider group), widen the application's policy in the Zero Trust dashboard afterwards.
-
-The account needs a [Zero Trust organization](https://developers.cloudflare.com/cloudflare-one/setup/), and both `init` and `pnpm cf-os access` stop with a link if there isn't one. To do it by hand instead, create the application yourself, copy its [audience tag](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/#get-your-aud-tag) into `access.audience`, and set `access.issuer` to `https://<team>.cloudflareaccess.com`.
+1. Choose a public hostname in an [active Cloudflare zone](https://developers.cloudflare.com/dns/zone-setups/), such as `os.example.com`.
+2. Create a [self-hosted Access application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) for that hostname, or let `pnpm cf-os access` find or create it and fill in step 3 for you.
+3. Copy its [application audience tag](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/#get-your-aud-tag).
+4. Open [`deployment.jsonc`](deployment.jsonc) and replace the active placeholders. Every control is annotated in place.
 
 The hostname belongs to the router, the only Worker here with a public route. Wrangler creates its DNS and TLS at deploy time. For an evaluation without a zone, switch the annotated route to `{ "workersDev": true }` and set `publicBaseUrl` to the resulting origin.
 
@@ -124,7 +97,7 @@ pnpm cf-os check
 pnpm cf-os deploy
 ```
 
-Both validate `deployment.jsonc`, then confirm with `cf` that the account has the Access application, team domain, and any KV namespace, R2 bucket or AI Gateway it names. A mismatch stops them before anything builds. `check` then builds everything and dry-runs every deploy; `deploy` deploys for real, without asking for confirmation. The packages build in parallel, and every build has to pass before anything deploys; the Workers then deploy in dependency waves (Gatekeepers and the Error Reporter, then the Workshop, then the router), with each command's output printed as one block when it finishes. Run on the unconfigured template at a terminal, either offers to start `pnpm cf-os init` instead of failing, then carries on with the file it writes.
+`check` confirms the account has what `deployment.jsonc` names, then builds everything and dry-runs every deploy; `deploy` does the same and deploys for real, without asking for confirmation.
 
 With resource values left as `null`, Wrangler creates the three KV namespaces and R2 bucket automatically and reconnects them on later deploys. Set explicit IDs or a bucket name when the deployment must reuse existing resources.
 
@@ -162,10 +135,9 @@ The complete control reference and recipes live in [Customization](docs/customiz
 - Stream production events with [`wrangler tail`](https://developers.cloudflare.com/workers/observability/logs/real-time-logs/).
 - Triage explicit failures and choose export destinations with the [observability guide](docs/observability.md).
 - Roll a Worker back from its dashboard deployment history or with [`wrangler rollback`](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
-- Bring the project up to date with `npx cf-os@latest update`. It merges the starter's `main`, checks the `cloudflare-os` submodule out at the starter's reviewed pin, installs, and writes `.cf-os/update.md` for your coding agent: what changed, any conflicts (git leaves them for you), and how to finish. Then run `pnpm cf-os check` and `pnpm cf-os deploy`.
-- Follow the [upgrade checklist](docs/customization.md#upgrade) before moving the pinned submodule past the starter's (`npx cf-os@latest update --upstream` stages upstream's `main` for that review).
+- Update with `npx cf-os@latest update`, which merges the starter's `main` and its reviewed pin and writes `.cf-os/update.md` for your coding agent. Follow the [upgrade checklist](docs/customization.md#upgrade) before moving the pinned submodule past the starter's.
 - Review the upstream Cloudflare OS documentation and release history before adopting behavior changes.
 
 ### Moving here from the hosted deploy (os.cloudflare.app/deploy)
 
-Ejecting an instance created by the hosted flow means redeploying over Workers that already hold your data. Worker names, storage IDs, the public URL, AI Gateway and the Access application all have to be carried across, and each one fails quietly if it is not: the deploy succeeds against empty storage. `pnpm cf-os init`'s **Take over a hosted instance** finds them in your account, asks for the few values the hosted deploy never had, and fills them into `deployment.jsonc`; `pnpm cf-os check` then confirms they exist. `pnpm cf-os import` is the same lookup on its own, read-only and scriptable. [Migrating from the hosted deploy](docs/migrate-from-hosted.md) explains each value and what is left to do by hand.
+Ejecting an instance created by the hosted flow means redeploying over Workers that already hold your data. Worker names, storage IDs, the public URL, AI Gateway and the Access application all have to be carried across, and each one fails quietly if it is not: the deploy succeeds against empty storage. `pnpm cf-os init`'s **Take over a hosted instance** finds them in your account and fills them in. [Migrating from the hosted deploy](docs/migrate-from-hosted.md) is the checklist.
