@@ -44,10 +44,14 @@ Find your hosted instance name — call it `N` — in the wizard, or read it off
 | `N-backend` | **All user data** (Durable Objects) | `workers.workshop.name` |
 | `N-gk-context` | Context collections | `workers.context.name` |
 | `N-gk-scheduler` | Scheduled and recurring work | `workers.scheduler.name` |
+| `N-gk-websearch` | Nothing; stateless web search | `workers.websearch.name` |
 | `N` | The public URL | `workers.router.name` |
 
-The Gatekeeper suffixes are the hosted flow's choice, not the starter's, so confirm all three
-against the dashboard worker list rather than assuming the pattern. The starter also deploys two
+The Gatekeeper suffixes are the hosted flow's choice, not the starter's, so confirm them against
+the dashboard worker list rather than assuming the pattern. An instance deployed before Web Search
+shipped has no `N-gk-websearch`. Name it yourself, and the deploy creates it. Its users finished
+onboarding before Web Search existed, so none of them has it until it is set to enabled in `/admin`
+or they turn it on from the Gatekeepers page. The starter also deploys two
 Workers the hosted flow does not: the example custom Gatekeeper and the Error Reporter. Give those
 new names; nothing depends on them yet.
 
@@ -58,13 +62,14 @@ new names; nothing depends on them yet.
   "workshop": { "name": "N-backend" },
   "context": { "name": "N-gk-context" },
   "scheduler": { "name": "N-gk-scheduler" },
+  "websearch": { "name": "N-gk-websearch" },
   "customGatekeeper": { "name": "N-gk-custom" },
   "errorReporter": { "name": "N-errors" }
 }
 ```
 
-Context and Scheduler are both there because upstream marks them ambient and the hosted flow
-preinstalls them on every instance. Point them at the existing Workers and existing schedules and
+Context, Scheduler and Web Search are all there because upstream marks them ambient and the hosted
+flow preinstalls them on every instance. Point them at the existing Workers and existing schedules and
 collections keep working; give either a new name and the app comes up with an empty library or an
 empty schedule list, while the originals keep running as Workers nothing is bound to.
 
@@ -93,7 +98,7 @@ KV bindings take the namespace **ID**, not the name — list them with
 `pnpm exec wrangler kv namespace list`. R2 takes the bucket name as-is.
 
 The Scheduler needs nothing here. Its state is entirely in its own Durable Objects, so section 2's
-name is the whole of it.
+name is the whole of it. Web Search keeps no state worth migrating.
 
 ### The second trap: the Context sharing boundary
 
@@ -168,6 +173,10 @@ Point it at the gateway the hosted flow already created for you, `N-ai`:
 - Adding `"google"` does require a token — see
   [AI models](customization.md#ai-models).
 
+Web Search searches through `N-ai` too, as the hosted deploy has it do: the deploy sets the
+Workshop's gateway as its `CF_AI_GATEWAY`. Searches need AI Gateway credits on the account or a
+Ceramic key on that gateway: see [Workers and routing](customization.md#workers-and-routing).
+
 ## 6. Cloudflare Access
 
 The hosted flow created a self-hosted Access application named `Cloudflare OS <instance> <fp8>`,
@@ -188,8 +197,8 @@ application to cover it — before deploying, and along with `context.sharingDom
   deployment" link. The starter does not set it, so the link disappears. This is not a regression to
   work around: the hosted wizard refuses to redeploy over its own workers once you have taken them
   over, which is the whole reason to eject.
-- **Gatekeepers you installed through the wizard.** The starter deploys the two ambient ones,
-  Context and Scheduler, plus whatever is in `packages/`. Any *other* Gatekeeper the wizard
+- **Gatekeepers you installed through the wizard.** The starter deploys the three ambient ones,
+  Context, Scheduler and Web Search, plus whatever is in `packages/`. Any *other* Gatekeeper the wizard
   installed keeps running as its own Worker, but the generated configs no longer carry its
   `GATEKEEPER_*` service binding, so it disappears from the app. Port it into `packages/` and add
   the binding in `scripts/deploy.ts` — to the Workshop for its vendor RPC, and to the router if it
@@ -205,6 +214,8 @@ Beyond the [standard checks](../README.md#4-verify-the-deployment):
 4. Open the Context library and confirm its collections are still listed.
 5. Confirm schedules made before the migration are still listed, and that a new one fires.
 6. Send one message to confirm inference actually routes.
+7. Turn Web Search on for your user (section 2), then ask an agent to search the web, and confirm
+   results come back.
 
 If the model picker is empty or the app looks freshly installed, **stop before writing anything**.
 Both are binding problems, not data loss: compare the deployed Worker names and resource IDs against

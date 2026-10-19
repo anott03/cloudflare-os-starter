@@ -32,6 +32,14 @@
     // the Context Gatekeeper
     "scheduler": { "name": "<SCHEDULER_WORKER_NAME>" },
 
+    // The Web Search Gatekeeper, which lets agents search the public web. Ambient too. It searches
+    // through aiGateway.name below when that gateway is in this account, and through the account's
+    // "default" gateway when aiGateway is disabled or in another account. Searches are billed
+    // separately from models: load AI Gateway credits on the account, or store a Ceramic key
+    // (alias "default") on the gateway it actually searches through, or every search fails.
+    // See docs/customization.md#workers-and-routing.
+    "websearch": { "name": "<WEBSEARCH_WORKER_NAME>" },
+
     "customGatekeeper": { "name": "<CUSTOM_GATEKEEPER_WORKER_NAME>" },
     "errorReporter": { "name": "<ERROR_REPORTER_WORKER_NAME>" }
   },

@@ -20,6 +20,9 @@ export default defineConfig({
       suspicious: 'error',
     },
     plugins: ['typescript', 'unicorn', 'oxc', 'import'],
+    // Upstream's local rules, loaded from the submodule so the two repositories share one
+    // implementation of each.
+    jsPlugins: ['./cloudflare-os/scripts/oxlint-plugin.ts'],
     options: {
       // Type-aware linting is intentionally off, as upstream. `tsc` is what enforces type safety
       // here: `pnpm types:scripts` for the deploy tooling and `pnpm build` for the packages.
@@ -29,6 +32,10 @@ export default defineConfig({
       es2024: true,
     },
     rules: {
+      // Exported API declaration documentation is surfaced by TypeScript in IDE hovers only when it
+      // uses JSDoc syntax. Ordinary implementation comments stay `//`.
+      'gadgets/prefer-jsdoc': 'error',
+
       // False positives: gatekeepers import `.txt` files as bundled text assets, which the import
       // resolver reports as "no default export".
       'import/default': 'off',
@@ -61,8 +68,7 @@ export default defineConfig({
       'unicorn/consistent-function-scoping': 'warn',
     },
     ignorePatterns: [
-      // The submodule lints itself, with its own config, its own plugins (including the local
-      // `gadgets/prefer-jsdoc` rule this file does not load) and its own per-directory overrides.
+      // The submodule lints itself, with its own config and its own per-directory overrides.
       // Linting it from here would report findings nobody in this repository can fix.
       'cloudflare-os/**',
       '**/dist/**',
@@ -79,6 +85,14 @@ export default defineConfig({
         env: {
           serviceworker: true,
           es2024: true,
+        },
+      },
+      {
+        // Mirrors upstream: declarations the agent receives as verbatim text (through the string
+        // module beside each), so nothing resolves their imports for it.
+        files: ['packages/*/src/*types.d.ts'],
+        rules: {
+          'gadgets/self-contained-agent-types': 'error',
         },
       },
       {
