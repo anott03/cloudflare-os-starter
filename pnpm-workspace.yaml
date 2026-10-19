@@ -8,13 +8,16 @@ packages:
 # edit rather than a hand edit of every package.json.
 #
 # Only three entries actually have to agree with cloudflare-os/pnpm-workspace.yaml: capnweb,
-# typescript and @cloudflare/workers-types, the ones whose types cross the `link:` boundary. A
-# differing capnweb gives the tree two copies, and a stub minted by one is unserialisable by the
-# other's session (`TypeError: Cannot serialize value: [object RpcStub]`); a differing
-# workers-types or typescript makes the submodule's declarations fail to match this side's. Keep
-# those three in step by hand when bumping the gitlink. The rest follow upstream for convenience.
+# typescript and @cloudflare/workers-types, the ones whose types cross the `link:` boundary. Each
+# install has its own capnweb copy whatever the version; only types cross the link today, so
+# keeping the ranges in step keeps those types compatible, and keeps the copies from diverging if
+# runtime code ever crosses (a stub minted by one copy is unserialisable by the other's session:
+# `TypeError: Cannot serialize value: [object RpcStub]`). A differing workers-types or typescript
+# makes the submodule's declarations fail to match this side's. Keep those three in step by hand
+# when bumping the gitlink. The rest follow upstream for convenience.
 catalog:
-  '@cloudflare/vitest-plugin': ^1.4.3
+  # Exact, matching upstream's lock. The overrides below set its miniflare and wrangler anyway.
+  '@cloudflare/vitest-plugin': 1.4.3
   '@cloudflare/workers-types': ^5.20261001.1
   capnweb: ^0.12.0
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
@@ -30,7 +33,9 @@ catalog:
   vite: 7.3.6
   vite-plus: ^1.2.0
   vitest: ^5.0.5
-  wrangler: ^4.147.0
+  # Exact: in lockstep with the miniflare entry above. Wrangler pins its own miniflare, so a
+  # newer one would bring a second miniflare/workerd stack alongside the test pool's.
+  wrangler: 4.147.0
 
 overrides:
   # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.

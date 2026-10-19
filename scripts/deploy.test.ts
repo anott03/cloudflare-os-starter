@@ -362,7 +362,7 @@ test("deploys the ambient Web Search Gatekeeper the hosted flow preinstalls", as
   const elsewhere = generateConfigs(variant((c) => { c.aiGateway.accountId = "fedcba9876543210fedcba9876543210"; }), bases);
   assert.equal(elsewhere.websearch.vars, undefined);
 
-  // Deployed before the Workshop, which binds it; type-checked before deploying.
+  // Built, and so type-checked, with the rest.
   const builds = buildCommands(validConfig).map(({ args }) => args);
   assert.deepEqual(
     builds.filter((args) => args.includes("@gadgets/gatekeeper-websearch")).map((args) => args.at(-1)),

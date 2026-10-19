@@ -72,7 +72,7 @@ pnpm exec wrangler login
 
 `pnpm install` installs the submodule's own workspace too, from a `postinstall` hook. If you install with `--ignore-scripts`, run `pnpm install:submodule` afterwards; `pnpm check` says so if you forget.
 
-Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](https://developers.cloudflare.com/kv/), [R2](https://developers.cloudflare.com/r2/), [Browser Rendering](https://developers.cloudflare.com/browser-rendering/), and [Dynamic Worker Loaders](https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/). It also needs [Workers AI](https://developers.cloudflare.com/workers-ai/) and [AI Gateway](https://developers.cloudflare.com/ai-gateway/), which the default model catalog runs on; only turning that catalog off makes them dispensable. [Artifacts](https://developers.cloudflare.com/artifacts/) is optional.
+Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](https://developers.cloudflare.com/kv/), [R2](https://developers.cloudflare.com/r2/), [Browser Rendering](https://developers.cloudflare.com/browser-rendering/), and [Dynamic Worker Loaders](https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/). It also needs [Workers AI](https://developers.cloudflare.com/workers-ai/) and [AI Gateway](https://developers.cloudflare.com/ai-gateway/), which the default model catalog runs on. Web Search needs them too, through the account's `default` gateway when the catalog is off, so they are dispensable only with the catalog off and Web Search disabled in `/admin`. [Artifacts](https://developers.cloudflare.com/artifacts/) is optional.
 
 ### 2. Configure sign-in
 
@@ -108,7 +108,7 @@ Backend error reporting is enabled without a vendor account. Explicit upstream i
 - Enable the Custom Gatekeeper, ask for deployment information, and confirm its read appears as an observation.
 - Open the Error Reporter Worker's [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) and verify its structured `error_report` query surface.
 - Ask an agent to schedule something a few minutes out, and confirm it runs — that exercises the Scheduler Gatekeeper end to end.
-- Ask an agent to search the web for something recent, and confirm it returns results. That exercises the Web Search Gatekeeper and the AI Gateway it searches through, `aiGateway.name`. Searches need AI Gateway credits or a Ceramic key on that gateway, not just the free Workers AI allowance: see [Workers and routing](docs/customization.md#workers-and-routing).
+- Ask an agent to search the web for something recent, and confirm it returns results. That exercises the Web Search Gatekeeper and the AI Gateway it searches through: `aiGateway.name` when it is in this account, otherwise the account's `default` gateway. Searches need AI Gateway credits or a Ceramic key on that gateway, not just the free Workers AI allowance: see [Workers and routing](docs/customization.md#workers-and-routing).
 - Review logs for the router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, and Error Reporter Workers.
 
 ## Customization
