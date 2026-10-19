@@ -27,7 +27,7 @@ Inside the starter it is the `packages/cf-os` workspace package, and `pnpm cf-os
 
 Every command takes `--config <path>` (default: `deployment.jsonc` in the project root), `--account <id>` (the account `init` and `import` use, ahead of the file's `accountId`; `check`, `deploy` and `access` refuse one other than the file's), `--profile <name>` (passed to every `cf` call), and `--help`. It works from any directory inside the project.
 
-Two tools sign in to Cloudflare, and `init` offers each when it is needed (or run `pnpm exec cf auth login` and `pnpm exec wrangler login`). Wrangler deploys. `cf` reads the zones, AI Gateways, email and workers.dev subdomain `init` offers as defaults, runs `access` and `import`, and lets `check` confirm the account has what `deployment.jsonc` names. It is optional: without it, `init` asks for those values, `check` skips the account checks with a notice, and Access is set up by hand. Instead of signing in, set `CLOUDFLARE_API_TOKEN` to a token with Access: Apps and Policies Edit and Access: Organizations, Identity Providers, and Groups Read (Edit, for `init` to add a One-time PIN provider), plus Read on Workers Scripts, Workers KV Storage, Workers R2 Storage, AI Gateway, Zone and DNS.
+Optionally, instead of signing in, set `CLOUDFLARE_API_TOKEN` to a token with Access: Apps and Policies Edit and Access: Organizations, Identity Providers, and Groups Read (Edit, for `init` to add a One-time PIN provider), plus Read on Workers Scripts, Workers KV Storage, Workers R2 Storage, AI Gateway, Zone and DNS.
 
 ## Output and prompts
 

@@ -73,7 +73,7 @@ It clones this starter and its submodule, installs, offers to create a private G
 
 `pnpm install` installs the submodule's own workspace too, from a `postinstall` hook. If you install with `--ignore-scripts`, run `pnpm cf-os install` afterwards; `pnpm cf-os check` says so if you forget.
 
-`pnpm cf-os init` offers the [Wrangler](https://developers.cloudflare.com/workers/wrangler/commands/#login) sign-in, which deploys, and the `cf` CLI's, which reads defaults from your account and sets up Access. [`packages/cf-os`](packages/cf-os/README.md) lists every command and flag, and what `cf` is needed for.
+`pnpm cf-os init` offers the [Wrangler](https://developers.cloudflare.com/workers/wrangler/commands/#login) sign-in, which deploys, and the `cf` CLI's, which reads defaults from your account and sets up Access. [`packages/cf-os`](packages/cf-os/README.md) lists every command and flag.
 
 Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](https://developers.cloudflare.com/kv/), [R2](https://developers.cloudflare.com/r2/), [Browser Rendering](https://developers.cloudflare.com/browser-rendering/), and [Dynamic Worker Loaders](https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/). It also needs [Workers AI](https://developers.cloudflare.com/workers-ai/) and [AI Gateway](https://developers.cloudflare.com/ai-gateway/), which the default model catalog runs on. Web Search needs them too, through the account's `default` gateway when the catalog is off, so they are dispensable only with the catalog off and Web Search disabled in `/admin`. [Artifacts](https://developers.cloudflare.com/artifacts/) is optional.
 
