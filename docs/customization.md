@@ -74,7 +74,7 @@ The hostname must belong to an active Cloudflare zone and cannot conflict with a
 
 `publicBaseUrl` is required there, because nothing in `deployment.jsonc` knows your account's `workers.dev` subdomain. If using workers.dev that value must be `https://<router-name>.<subdomain>.workers.dev`. Two things read the origin — `PUBLIC_BASE_URL`, which upstream builds absolute links and OAuth redirect URIs from, and the Context sharing boundary under [Storage](#storage) — so a typo here would deploy successfully and then hide existing Context data and break every redirect.
 
-On a custom domain the hostname is yours and has nothing to do with any Worker name, so `pnpm check` compares `publicBaseUrl` against `customDomain` instead: leave it `null` and the deploy derives the origin from the domain, or set it to exactly `https://<customDomain>`.
+On a custom domain the hostname is yours and has nothing to do with any Worker name, so `pnpm cf-os check` compares `publicBaseUrl` against `customDomain` instead: leave it `null` and the deploy derives the origin from the domain, or set it to exactly `https://<customDomain>`.
 
 ### Sign-in methods
 
@@ -86,7 +86,7 @@ Cloudflare OS supports three ways to sign users in. This starter deploys Cloudfl
 | Built-in password accounts | Cloudflare OS serves its own username and password login plus signup. This is the upstream default. | Requires deploy script changes |
 | Auth Gatekeepers | Gatekeepers that advertise `providesAuth` add "Continue with ..." buttons, alongside or instead of password login. | Requires deploy script changes |
 
-Access mode is the default here because unauthenticated requests never reach application code. `scripts/deploy.ts` implements it by setting `CF_ACCESS_ISS` and `CF_ACCESS_AUD` on the Workshop and building the frontend with `VITE_CF_ACCESS_MODE=true`.
+Access mode is the default here because unauthenticated requests never reach application code. `packages/cf-os/src/core/deployment.ts` implements it by setting `CF_ACCESS_ISS` and `CF_ACCESS_AUD` on the Workshop and building the frontend with `VITE_CF_ACCESS_MODE=true`.
 
 To run another method, drop those two variables and the build flag, then set upstream's `AUTH_GATEKEEPERS` allowlist for provider sign-in. `DISABLE_PASSWORD_AUTH=true` makes a deployment provider-only. Upstream ignores it unless at least one auth Gatekeeper is allowlisted, so a deployment cannot lock everyone out. The wrapper's validation assumes Access mode, so review the upstream Workshop backend and frontend documentation before changing it.
 
@@ -170,7 +170,7 @@ The binding stays bound whatever you configure here: as well as carrying gateway
 | `accountId` set to another account | Needs `CF_AI_GATEWAY_API_TOKEN`. The binding only reaches gateways in the Worker's own account, so the generated config sets `CF_AI_GATEWAY_USE_BINDING: "false"` and the HTTPS transport takes over. |
 | `enabled: false` | No deployment-managed catalog. Each user supplies their own model API keys — and a Workshop [migrated from the hosted deploy](migrate-from-hosted.md) will show an empty model picker. |
 
-`pnpm check` reports which of the last two applies before it deploys anything.
+`pnpm cf-os check` reports which of the last two applies before it deploys anything.
 
 #### When a token is required
 
@@ -190,7 +190,7 @@ The starter enables structured custom logs and a private console-backed Error Re
 
 ## Custom Gatekeepers
 
-Keep deployment-owned Gatekeepers under `packages/`, outside the `cloudflare-os` submodule. `scripts/deploy.ts` binds this repository's example as `GATEKEEPER_CUSTOM` and Context as `GATEKEEPER_CONTEXT`, twice each: on the Workshop with the `GatekeeperVendor` entrypoint for RPC, and on the router with no entrypoint, where the binding name is what routes `/gatekeeper/custom` and `/gatekeeper/context` to it. A Gatekeeper that serves HTTP — an OAuth redirect, for instance — needs both.
+Keep deployment-owned Gatekeepers under `packages/`, outside the `cloudflare-os` submodule. `packages/cf-os/src/core/deployment.ts` binds this repository's example as `GATEKEEPER_CUSTOM` and Context as `GATEKEEPER_CONTEXT`, twice each: on the Workshop with the `GatekeeperVendor` entrypoint for RPC, and on the router with no entrypoint, where the binding name is what routes `/gatekeeper/custom` and `/gatekeeper/context` to it. A Gatekeeper that serves HTTP — an OAuth redirect, for instance — needs both.
 
 The minimal example flow is:
 
@@ -209,12 +209,16 @@ Prefer wrapper-owned Workers and [service bindings](https://developers.cloudflar
 
 ## Upgrade
 
+`npx cf-os@latest update` brings the project up to date with the starter: it merges the starter's `main` (fetched from its URL, so no remote is needed), checks the submodule out at the pin that merge brings, runs `pnpm install`, and writes `.cf-os/update.md`. The brief lists both commit ranges and any conflicts, which git leaves in place, and gives a coding agent the steps to finish and summarise the update, starting from [the operator skill's updating guide](../.agents/skills/cloudflare-os-operator/references/updating.md). The starter's pin has already been reviewed against the starter, so for that path the list below is a check on your own customisations. `--dry-run` lists what would be merged, and `git reset --keep <old HEAD>` (the brief names it) undoes it.
+
+Moving the submodule past the starter's pin is a review of its own. `npx cf-os@latest update --upstream` picks upstream's `main` as the target and stages it without committing; or check out the commit by hand. It first merges the starter's `main`, committed, as plain `update` does, so run that and commit it first to leave the staged change a gitlink-only review. Then:
+
 1. Record the current `cloudflare-os` gitlink for rollback.
 2. Update the submodule to the intended upstream commit.
-3. Review the Wrangler base-config changes for the Workshop, router and the three ambient Gatekeepers (Context, Scheduler, Web Search), along with the Gatekeeper contracts. `pnpm lint` catches one class of drift for you: `scripts/deployment-config.ts` reuses upstream's `WranglerConfig`, so a changed key there is a type error, not a silently dropped one. A newly preinstalled Gatekeeper (`PREINSTALL` in `cloudflare-os/scripts/release/manifest-lib.ts`) needs a Worker and bindings in `scripts/deploy.ts` to keep the starter on the hosted topology.
+3. Review the Wrangler base-config changes for the Workshop, router and the three ambient Gatekeepers (Context, Scheduler, Web Search), along with the Gatekeeper contracts. `pnpm lint` catches one class of drift for you: `packages/cf-os/src/core/deployment-config.ts` reuses upstream's `WranglerConfig`, so a changed key there is a type error, not a silently dropped one. A newly preinstalled Gatekeeper (`PREINSTALL` in `cloudflare-os/scripts/release/manifest-lib.ts`) needs a Worker and bindings in `packages/cf-os/src/core/deployment.ts`, and a row in the naming table in `core/naming.ts`, to keep the starter on the hosted topology.
 4. Compare three entries of `cloudflare-os/pnpm-workspace.yaml`'s `catalog:` with this repository's: `capnweb`, `typescript` and `@cloudflare/workers-types`. Only those three have to match. The packages here `link:` to the submodule's rather than sharing a workspace with them. So the submodule's dependencies come from its own lockfile, and this catalog does not govern them. Types still cross the link, though. Each install has its own `capnweb` copy whatever the version, and today only its types cross. Keeping the ranges in step keeps those types compatible, and keeps the two copies from diverging if runtime code ever crosses too.
-5. Run `pnpm install`, then `pnpm lint` and `pnpm check`. The root `postinstall` (`scripts/install-submodule.ts`) reinstalls the submodule's workspace from its lockfile. `optimisticRepeatInstall: false` makes it run even when this repository's own lockfile has not changed, which is what a gitlink bump looks like from here. If the hook was skipped (`--ignore-scripts`), every build, test and deploy entry point stops and tells you to run `pnpm install:submodule`.
+5. Run `pnpm install`, then `pnpm lint` and `pnpm cf-os check`. The root `postinstall` (`cf-os install`) reinstalls the submodule's workspace from its lockfile. `optimisticRepeatInstall: false` makes it run even when this repository's own lockfile has not changed, which is what a gitlink bump looks like from here. If the hook was skipped (`--ignore-scripts`), `pnpm cf-os install --check` and every build, test and deploy entry point stop and tell you to run `pnpm cf-os install`.
 6. Deploy and verify Access, administrator access, storage, configured AI, Context, Scheduler, Web Search, custom observations, and the Error Reporter query surface.
 7. If needed, restore the previous gitlink and redeploy, or use [Workers rollback](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/) when bindings remain compatible. Neither works across a Durable Object migration: once a pin that adds a `migrations` tag to a Worker's `wrangler.jsonc` has deployed, that Worker can only be repaired forward. Check for new tags in step 3, the Workshop's especially, before deploying.
 
-Do not update the submodule blindly. The deployment script derives from upstream configs so incompatible base changes remain visible during review and checks.
+Do not update the submodule blindly. The deploy derives from upstream configs so incompatible base changes remain visible during review and checks.

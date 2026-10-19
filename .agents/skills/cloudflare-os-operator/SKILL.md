@@ -15,7 +15,7 @@ This skill operates the deployment wrapper, not Cloudflare OS in isolation. The 
 Find the repository root containing all of these markers:
 
 - `deployment.jsonc`
-- `scripts/deploy.ts`
+- `packages/cf-os/`
 - `cloudflare-os/`
 - `packages/custom-gatekeeper/`
 
@@ -29,26 +29,37 @@ Before any mutation, always read the current checkout's:
 
 1. `README.md`
 2. `deployment.jsonc`
-3. `scripts/deploy.ts`
+3. `packages/cf-os/src/core/deployment.ts` and `packages/cf-os/src/commands/deploy.ts`
 4. `package.json`
 5. `.gitmodules`
 6. Available relevant upstream files under `cloudflare-os/`
 
 Load `docs/customization.md`, `docs/observability.md`, package guides, and reference files from this skill only when their subject is relevant. If the submodule is unavailable, inspect all available wrapper sources and defer upstream-dependent advice until provenance is resolved.
 
-Inspect the deploy script rather than assuming its validation, generated paths, build steps, or deployment order. Consult current Cloudflare documentation before relying on product behavior, permissions, CLI syntax, limits, or rollback support. Repository code is authoritative for what this checkout does; current Cloudflare documentation is authoritative for the platform it calls. Surface conflicts instead of silently choosing one.
+Inspect the deploy code rather than assuming its validation, generated paths, build steps, or deployment order. Consult current Cloudflare documentation before relying on product behavior, permissions, CLI syntax, limits, or rollback support. Repository code is authoritative for what this checkout does; current Cloudflare documentation is authoritative for the platform it calls. Surface conflicts instead of silently choosing one.
 
 Expected baseline commands are:
 
 ```sh
 git submodule update --init
-pnpm install                  # its postinstall (`scripts/install-submodule.ts`) installs cloudflare-os/'s workspace too
+pnpm install                   # its postinstall (`cf-os install`) installs cloudflare-os/'s workspace too
 pnpm exec wrangler login
-pnpm check
-pnpm deploy
+pnpm exec cf auth login        # optional: account lookups, Access setup, and the check's account checks
+pnpm cf-os import <instance>   # read-only, for an instance ejected from the hosted deploy
+pnpm cf-os access --dry-run
+pnpm cf-os check
+pnpm cf-os deploy
 ```
 
-Confirm them against the checkout before running them. Always use `pnpm`, never `npm` or `yarn`.
+Confirm them against the checkout before running them (`pnpm cf-os --help` lists the commands). Always use `pnpm`, never `npm` or `yarn`; the one exception is `npx cf-os@latest update`, which fetches the newest published CLI. `pnpm check` and `pnpm deploy` are aliases for the last two.
+
+Against the account, the commands split as follows:
+
+- **Read-only:** `pnpm cf-os import`, `pnpm cf-os check`, `pnpm cf-os access --dry-run`, and `pnpm exec cf ... list`/`get`. They suit the inventory step.
+- **Local writes only:** `pnpm cf-os import --out <path>` writes a local file (pointed at `deployment.jsonc`, it edits that in place), so treat it like any other edit to approved configuration. `npx cf-os@latest update` merges the starter's `main` (a git merge, left conflicted if it conflicts), checks the submodule out at the starter's pin, runs `pnpm install`, and writes `.cf-os/update.md`; follow that brief and [references/updating.md](references/updating.md). Its `--upstream` merges the starter's `main` the same way, committed, then stages an unreviewed pin, which needs the upgrade gate in [references/upgrade-and-rollback.md](references/upgrade-and-rollback.md) before it is committed.
+- **Mutating:** `pnpm cf-os access` without `--dry-run` can create an Access application. `pnpm cf-os init` reads the account and writes `deployment.jsonc`, but its Access step can create an Access application and a One-time PIN identity provider when the operator chooses to, and once the file is complete it offers to run `pnpm cf-os deploy`. Outside a project, `cf-os init <dir>` can also create a private GitHub repository and push to it. `pnpm cf-os deploy` deploys every Worker without asking for confirmation. Each needs approval like any other remote mutation.
+
+`pnpm cf-os init` is interactive and refuses without a terminal. Agents should use `import`, `access`, direct edits to `deployment.jsonc` and an approved `pnpm cf-os deploy` instead, which take every answer as a flag or from the file.
 
 ## Operating Rules
 
@@ -58,7 +69,7 @@ Confirm them against the checkout before running them. Always use `pnpm`, never 
 - Never guess an account ID, resource ID, hostname, Access issuer, audience, administrator, Worker name, provider, or existing-resource ownership.
 - Never expose a token, cookie, JWT, secret, prompt, request body, response body, or private log content in chat, tracked files, command arguments, or reports. For local development only, use Wrangler's supported local-secret mechanism after proving the file is ignored and the credential is non-production.
 - Use the project-pinned Wrangler through `pnpm exec wrangler`.
-- Run only one `pnpm check` or `pnpm deploy` per checkout at a time. Use separate worktrees for concurrency.
+- Run only one `pnpm cf-os check` or `pnpm cf-os deploy` per checkout at a time. Use separate worktrees for concurrency.
 - Change one root cause at a time. Re-run the narrow check, then the complete check.
 - Do not broaden permissions, disable security controls, recreate resources, or retry deployments blindly to make an error disappear.
 - Keep a sanitized operation record: root commit, submodule commit, target account, intended route, Worker names, resource identities, deployment/version IDs, decisions, verification, and rollback limits.
@@ -71,6 +82,7 @@ Choose one mode before acting:
 - **Evaluation:** a non-production deployment, usually on an explicitly protected `workers.dev` hostname.
 - **Production:** a custom domain and production data or users.
 - **Incident:** restore safety and service while preserving evidence.
+- **Update:** merge the starter's latest, and with it the starter's pin, with `npx cf-os@latest update`. Follow [references/updating.md](references/updating.md).
 - **Upgrade:** move the pinned `cloudflare-os` gitlink to a reviewed commit.
 
 Also classify the deployment as a first deploy, continuation of an existing deployment, or replacement. If this is unclear, remain read-only.
@@ -105,7 +117,7 @@ Show the authority before and after, affected users/data, cost and privacy impli
 
 ### Production Mutation
 
-Do not run `pnpm deploy`, install or delete secrets, modify Access/DNS, adopt resources, or roll back production until the operator approves a mutation summary containing:
+Do not run `pnpm cf-os deploy`, install or delete secrets, modify Access/DNS, adopt resources, or roll back production until the operator approves a mutation summary containing:
 
 - Exact account ID and hostname.
 - Root and submodule commits.
@@ -114,7 +126,7 @@ Do not run `pnpm deploy`, install or delete secrets, modify Access/DNS, adopt re
 - Access application and administrator policy.
 - AI, observability, Reporter, and Gatekeeper modes.
 - Last-known-good deployment IDs and rollback limitations.
-- Evidence that `pnpm check` passed.
+- Evidence that `pnpm cf-os check` passed.
 
 Never delete Workers, routes, Access applications, KV namespaces, R2 buckets, secrets, or user data as automatic cleanup or troubleshooting.
 
@@ -188,14 +200,14 @@ For production:
 
 1. Confirm the hostname belongs to an active zone in the target account.
 2. Stop on an existing DNS record, Worker route, custom domain, or Access application collision. Never delete a conflicting record automatically.
-3. Create or identify a self-hosted Access application covering the exact hostname.
+3. Create or identify a self-hosted Access application covering the exact hostname. `pnpm cf-os access --dry-run` reports whether one already covers it, and shows the request it would otherwise send. The application it creates admits exactly `access.admins`, by email.
 4. Use a narrow policy for intended identities. Broad `Everyone`, `Bypass`, or weak bootstrap policies require an explicit risk acceptance.
-5. Copy the exact HTTPS team-origin issuer and exact application audience tag.
+5. Copy the exact HTTPS team-origin issuer and exact application audience tag. `pnpm cf-os access` writes both, and `pnpm cf-os check` confirms them against the account when `cf` is signed in.
 6. Make administrators an explicit subset of users allowed by Access.
 
 For evaluation, using `workersDev: true` does not itself add authentication. Protect the exact evaluation hostname with Access and use that application's audience. `publicBaseUrl` must name that same hostname: it is what `PUBLIC_BASE_URL` and the Context sharing boundary derive from, and the deploy refuses a `workers.dev` route without it. Confirm Preview URLs are off in every generated config, and never patch a generated file to change one.
 
-For a first `workers.dev` deployment, determine whether the Access application can be created for the predictable hostname before the Worker exists. If it requires the Worker first, present a controlled two-stage bootstrap for approval: pre-create only a reserved Router Worker identity with no sensitive application or data, enable Access and obtain its audience, then configure and run the wrapper deployment. Do not use `pnpm deploy` for the identity bootstrap because it deploys the whole stack. Record and minimize any temporary public route, and do not proceed if the bootstrap cannot be contained.
+For a first `workers.dev` deployment, determine whether the Access application can be created for the predictable hostname before the Worker exists. If it requires the Worker first, present a controlled two-stage bootstrap for approval: pre-create only a reserved Router Worker identity with no sensitive application or data, enable Access and obtain its audience, then configure and run the wrapper deployment. Do not use `pnpm cf-os deploy` for the identity bootstrap because it deploys the whole stack. Record and minimize any temporary public route, and do not proceed if the bootstrap cannot be contained.
 
 Initially allow only deployment operators. Widen access only after `/admin` policy and all post-deploy checks pass.
 
@@ -237,7 +249,7 @@ Decisions to confirm:
 3. Whether prompts/responses are logged, where, for how long, and who can access them.
 4. Whether `aiGateway.accountId` should stay `null`. A different account is the deploy's way of saying the gateway is out of the binding's reach, and it turns the token back on.
 
-Only two configurations still require the token, and `pnpm check` names whichever applies before deploying: the `google` provider, whose adapter refuses the binding's fetch, and a gateway in another account. In exactly those cases the generated config declares the secret as required, so wrangler refuses the deploy without it — install it interactively on the exact Workshop identity, after confirming account and Worker ownership, and record the version it deploys.
+Only two configurations still require the token, and `pnpm cf-os check` names whichever applies before deploying: the `google` provider, whose adapter refuses the binding's fetch, and a gateway in another account. In exactly those cases the generated config declares the secret as required, so wrangler refuses the deploy without it — install it interactively on the exact Workshop identity, after confirming account and Worker ownership, and record the version it deploys.
 
 Never remove the `WORKERS_AI` binding to opt out of gateway transport. It is also what the agent's `webFetch` document-to-Markdown conversion runs on. The supported opt-out is `aiGateway.accountId`, which the deploy translates into `CF_AI_GATEWAY_USE_BINDING: "false"`.
 
@@ -272,34 +284,30 @@ Browser reporting stays disabled unless rate limiting, origin checks, private so
 Run:
 
 ```sh
-pnpm check
+pnpm cf-os check
 ```
 
-Expect wrapper tests, selected package builds, generated Wrangler configs, and Wrangler dry-runs as defined by the current script. Confirm generated files are removed afterward. An upgrade also requires the separate relevant upstream checks described in the upgrade reference.
+Expect wrapper tests, selected package builds, generated Wrangler configs, and Wrangler dry-runs as defined by the current `commands/deploy.ts`. Confirm generated files are removed afterward. An upgrade also requires the separate relevant upstream checks described in the upgrade reference.
 
-Passing `pnpm check` does not prove remote resource ownership, secret scope, Access policy, custom-domain availability, billing, live service compatibility, or data preservation. Fix failures one cause at a time, run the narrow package/test where useful, then rerun the complete check.
+When `cf` is signed in, `pnpm cf-os check` also confirms the following exist in the account: the Access application with the configured audience, covering the Router's hostname; the team domain matching the issuer; and every explicitly named KV namespace, R2 bucket and non-default AI Gateway. When `cf` is not signed in it skips those checks with one notice line, so read the output rather than the exit code. Existence is not ownership. Passing `pnpm cf-os check` does not prove remote resource ownership, secret scope, Access policy, custom-domain availability, billing, live service compatibility, or data preservation. Fix failures one cause at a time, run the narrow package/test where useful, then rerun the complete check.
 
 ### 10. Approve And Deploy
 
-Before requesting approval, inventory current deployed version IDs for all affected Workers and verify downstream RPC changes remain compatible with both the old and new Workshop. The deployment is not atomic. The expected baseline order is:
+Before requesting approval, inventory current deployed version IDs for all affected Workers and verify downstream RPC changes remain compatible with both the old and new Workshop. The deployment is not atomic. Every build has to pass before anything deploys; the Workers then deploy in three waves, each starting only once the one before has finished:
 
-1. Error Reporter, when enabled.
-2. Context.
-3. Scheduler.
-4. Web Search.
-5. Custom Gatekeeper.
-6. Workshop.
-7. Router, which binds every one of the above.
+1. Error Reporter (when enabled), Context, Scheduler, Web Search and Custom Gatekeeper, concurrently.
+2. Workshop, which binds every one of them.
+3. Router, which binds the Workshop and every Gatekeeper.
 
-If current `scripts/deploy.ts` differs, use its order. The Router going last means a failure before it leaves the previous Router version still serving the public URL over partly-updated backends, so a healthy-looking site is not evidence the deploy completed. Breaking cross-Worker contracts need parallel identities and a controlled binding switch, not an in-place sequential deploy.
+If `deployWaves()` in the current `packages/cf-os/src/core/deployment.ts` differs, use its waves. A failure inside a wave lets that wave's other deploys finish, then stops before the next wave, so several Workers of one wave can be updated while one is not. The Router going last means a failure before it leaves the previous Router version still serving the public URL over partly-updated backends, so a healthy-looking site is not evidence the deploy completed. Breaking cross-Worker contracts need parallel identities and a controlled binding switch, not an in-place deploy.
 
 Present the production mutation summary from the hard stop. After explicit approval, run:
 
 ```sh
-pnpm deploy
+pnpm cf-os deploy
 ```
 
-Record each successful stage and resulting deployment/version ID. On the first failure, stop and inventory actual remote state before deciding to resume or roll back. Never assume the script is transactional or retry-safe.
+Each Worker's Wrangler output is printed as one block when it finishes, so read every block in a wave, not just the last. Record each successful stage and resulting deployment/version ID. On the first failure, stop and inventory actual remote state before deciding to resume or roll back. Never assume the script is transactional or retry-safe.
 
 ### 11. Verify The Live Deployment
 
@@ -355,7 +363,7 @@ Use [references/troubleshooting.md](references/troubleshooting.md) for symptom-s
 4. Form one falsifiable root-cause hypothesis.
 5. Gather the minimum non-sensitive evidence needed to test it.
 6. Correct one cause and run the narrowest relevant check.
-7. Rerun `pnpm check`.
+7. Rerun `pnpm cf-os check`.
 8. Re-enter the approval gate if production or a trust boundary changed.
 9. Deploy and repeat the full live verification.
 
@@ -367,4 +375,4 @@ Rollback is a coordinated system operation, not one command. Read [references/up
 
 ## Pinned Submodule Upgrade
 
-Never advance the submodule blindly. Read and follow [references/upgrade-and-rollback.md](references/upgrade-and-rollback.md). An evaluation worktree prevents local file races but is not staging isolation; use separate Worker identities, route, storage, bindings, and data. Stop for specialist review before any migration, deleted/renamed Durable Object class, irreversible data change, auth boundary change, or incompatible RPC change.
+Never advance the submodule blindly. Taking the starter's pin with `npx cf-os@latest update` is the reviewed path: follow the brief it writes and [references/updating.md](references/updating.md). Moving past it, by `update --upstream` or by hand, is an upgrade: read and follow [references/upgrade-and-rollback.md](references/upgrade-and-rollback.md), and [references/updating.md](references/updating.md) for what an upstream range usually needs here. An evaluation worktree prevents local file races but is not staging isolation; use separate Worker identities, route, storage, bindings, and data. Stop for specialist review before any migration, deleted/renamed Durable Object class, irreversible data change, auth boundary change, or incompatible RPC change.

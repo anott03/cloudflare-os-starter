@@ -1,10 +1,10 @@
-// `node scripts/install-submodule.ts [--check]`
+// `cf-os install [--check]`
 //
 // Installs the submodule's own workspace (`pnpm --dir cloudflare-os install --frozen-lockfile`).
 // This repository's packages `link:` into cloudflare-os/, and pnpm installs nothing for a linked
 // directory. The root `postinstall` runs this, but pnpm skips that hook under `--ignore-scripts`, so
-// the root `build`, `test`, `check` and `deploy` scripts run `--check` first. Frozen, because the
-// submodule's lockfile belongs to the upstream repository.
+// `cf-os check` and `cf-os deploy` run `check()` as well. Frozen, because the submodule's lockfile
+// belongs to the upstream repository.
 //
 // It deletes pnpm's workspace state file first, which otherwise lets pnpm skip an install that
 // would restore a missing link. On success it records cloudflare-os/pnpm-lock.yaml's sha256 in
@@ -12,13 +12,13 @@
 // `--check` compares that record with the lockfile, catching a skipped hook after a gitlink bump.
 //
 // Imports only node builtins statically: it runs before the submodule is checked out, and imports
-// the submodule's `pnpmCommand()` only once the submodule is known to be there.
+// `pnpmCommand()` (../pnpm-command.ts, over the submodule's) only once the submodule is there.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { join } from "node:path";
+import type { CommandArgs, Context } from "../context.ts";
 
 export const SUBMODULE_INSTALL_ARGS = ["--dir", "cloudflare-os", "install", "--frozen-lockfile"];
 
@@ -34,14 +34,14 @@ function lockfileSha256(submoduleDir: string): string {
 }
 
 /**
- * The root script every fix names, run as `pnpm <this>`: through pnpm, it has the `npm_execpath`
+ * The command every fix names, run as `pnpm <this>`: through pnpm, it has the `npm_execpath`
  * `pnpmCommand()` needs to spawn pnpm on Windows.
  */
-export const INSTALL_SCRIPT = "install:submodule";
+export const INSTALL_SCRIPT = "cf-os install";
 
 /** What both modes print without the submodule. */
 export const NOT_CHECKED_OUT =
-  "install-submodule: cloudflare-os/ is empty, so the submodule is not checked out. Every package " +
+  "cf-os install: cloudflare-os/ is empty, so the submodule is not checked out. Every package " +
   `here links into it. Run \`git submodule update --init\`, then \`pnpm ${INSTALL_SCRIPT}\`.`;
 
 /** pnpm's workspace state file, `.pnpm-workspace-state-v1.json` in pnpm 11. Versioned by pnpm. */
@@ -71,14 +71,14 @@ export async function install(
     console.error(NOT_CHECKED_OUT);
     return 1;
   }
-  console.error(`install-submodule: installing cloudflare-os/'s workspace too (pnpm ${SUBMODULE_INSTALL_ARGS.join(" ")})`);
+  console.error(`cf-os install: installing cloudflare-os/'s workspace too (pnpm ${SUBMODULE_INSTALL_ARGS.join(" ")})`);
   clearWorkspaceState(join(submoduleDir, "node_modules"));
   rmSync(join(submoduleDir, INSTALL_MARKER), { force: true });
-  const { pnpmCommand } = await import("../cloudflare-os/scripts/pnpm-command.ts");
+  const { pnpmCommand } = await import("../pnpm-command.ts");
   const [command, args] = pnpmCommand(SUBMODULE_INSTALL_ARGS);
   const result = spawn(command, args, { cwd: root, stdio: "inherit" });
   if (result.error) {
-    console.error(`install-submodule: could not run pnpm: ${result.error.message}`);
+    console.error(`cf-os install: could not run pnpm: ${result.error.message}`);
     return 1;
   }
   if (result.status !== 0) return result.status ?? 1;
@@ -106,7 +106,7 @@ export function check({ root }: { root: string }): { ok: true } | { ok: false; m
   if (typeof installed !== "string") {
     return {
       ok: false,
-      message: `install-submodule: the submodule's workspace is not installed (no readable cloudflare-os/${INSTALL_MARKER}). ${fix}`,
+      message: `cf-os install: the submodule's workspace is not installed (no readable cloudflare-os/${INSTALL_MARKER}). ${fix}`,
     };
   }
   let current: string | undefined;
@@ -118,20 +118,17 @@ export function check({ root }: { root: string }): { ok: true } | { ok: false; m
   if (installed !== current) {
     return {
       ok: false,
-      message: "install-submodule: cloudflare-os/pnpm-lock.yaml has changed since the submodule's workspace was " +
+      message: "cf-os install: cloudflare-os/pnpm-lock.yaml has changed since the submodule's workspace was " +
         `installed, so cloudflare-os/node_modules is stale. ${fix}`,
     };
   }
   return { ok: true };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  if (process.argv.includes("--check")) {
-    const result = check({ root });
-    if (!result.ok) console.error(result.message);
-    process.exitCode = result.ok ? 0 : 1;
-  } else {
-    process.exitCode = await install({ root });
-  }
+/** `cf-os install [--check]`. */
+export async function run(args: CommandArgs, ctx: Context): Promise<number> {
+  if (!args.values.check) return install({ root: ctx.root });
+  const result = check({ root: ctx.root });
+  if (!result.ok) ctx.out.log(result.message);
+  return result.ok ? 0 : 1;
 }

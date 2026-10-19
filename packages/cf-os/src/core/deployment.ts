@@ -1,11 +1,9 @@
-import { existsSync } from "node:fs";
-import { readFile, rm, writeFile } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join, relative, resolve } from "node:path";
-import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
-import { pnpmCommand } from "../cloudflare-os/scripts/pnpm-command.ts";
-import { resolveBinEntry } from "../cloudflare-os/scripts/bin-entry.ts";
+// The deployment as pure data: `validateConfig` checks a parsed `deployment.jsonc`, then
+// `generateConfigs` derives each Worker's `wrangler.prod.jsonc` from its upstream base config, and
+// `buildCommands`/`deployWaves` say what a check or deploy runs and what of it can run together. No
+// I/O: the base configs come in parsed and the commands go out as arguments, for
+// `commands/deploy.ts` to read and run.
+
 import { AI_GATEWAY_PROVIDERS } from "./deployment-config.ts";
 import type {
   BaseConfigs,
@@ -16,10 +14,12 @@ import type {
   RouterRoute,
 } from "./deployment-config.ts";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-// One deployment per checkout; use separate worktrees for concurrent deploys.
-const generatedName = "wrangler.prod.jsonc";
-const packageDirs = {
+/**
+ * Where each Worker's package lives, relative to the project root, keyed as `deployment.jsonc` keys
+ * the Workers. Its base `wrangler.jsonc` is read from there, and its generated config written beside
+ * it.
+ */
+export const PACKAGE_DIRS = {
   router: "cloudflare-os/packages/router",
   workshop: "cloudflare-os/packages/workshop-backend",
   context: "cloudflare-os/packages/gatekeeper-context",
@@ -28,9 +28,15 @@ const packageDirs = {
   customGatekeeper: "packages/custom-gatekeeper",
   errorReporter: "packages/error-reporter",
 } as const;
-const generatedPaths = Object.fromEntries(
-  Object.entries(packageDirs).map(([name, dir]) => [name, join(root, dir, generatedName)]),
-) as Record<keyof typeof packageDirs, string>;
+
+/** A key of {@link PACKAGE_DIRS}: one deployable Worker. */
+export type PackageKey = keyof typeof PACKAGE_DIRS;
+
+/**
+ * The generated config's file name, beside each base `wrangler.jsonc`. One deployment per checkout;
+ * use separate worktrees for concurrent deploys.
+ */
+export const GENERATED_NAME = "wrangler.prod.jsonc";
 const defaultContextArtifactsNamespace = "gatekeeper-context-collections";
 const accountIdPattern = /^[a-f\d]{32}$/i;
 
@@ -161,6 +167,13 @@ function validatePublicBaseUrl(config: DeploymentConfig, route: RouterRoute): vo
   }
 }
 
+/** The file still holds a template `<PLACEHOLDER>`: it has not been configured yet. */
+export class PlaceholderError extends Error {}
+
+/**
+ * Checks `config` against everything a deploy relies on, throwing the first problem with the config
+ * path it concerns. A file that still holds template placeholders throws {@link PlaceholderError}.
+ */
 export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   const activePaths = [
     ...requiredPaths,
@@ -192,7 +205,7 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     };
   }
   const placeholder = JSON.stringify(activeConfig).match(/<[^>]+>/)?.[0];
-  if (placeholder) throw new Error(`Replace deployment placeholder ${placeholder}.`);
+  if (placeholder) throw new PlaceholderError(`Replace deployment placeholder ${placeholder}.`);
 
   const stringPaths = activePaths.filter((path) => ![
     "access.admins",
@@ -315,7 +328,7 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
  * How the Workshop reaches AI Gateway, derived rather than configured.
  *
  * The Worker cannot discover its own account at runtime, so it cannot tell whether the gateway it
- * is pointed at is one its `WORKERS_AI` binding can reach. This script can: it holds both account
+ * is pointed at is one its `WORKERS_AI` binding can reach. The deploy can: it holds both account
  * IDs. Everything below follows from comparing them.
  */
 export interface AiGatewayPlan {
@@ -363,7 +376,7 @@ export function aiGatewayPlan(config: DeploymentConfig): AiGatewayPlan | null {
  * The deploy-time half of `AiGatewayConfig`'s constructor checks
  * (cloudflare-os/packages/workshop-backend/src/ai-gateway.ts), mirroring `resolveAiGateway()` in
  * cloudflare-os/scripts/preview/staging-config.ts. A configuration the backend would reject belongs
- * in a failed `pnpm check`, not in somebody's first chat.
+ * in a failed `cf-os check`, not in somebody's first chat.
  */
 function validateAiGateway(config: DeploymentConfig): void {
   if (config.aiGateway.workersAi !== undefined) {
@@ -431,6 +444,7 @@ function setCommon(
   };
 }
 
+/** Every Worker's `wrangler.prod.jsonc`, derived from its base config. Validates `config` first. */
 export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): GeneratedConfigs {
   validateConfig(config);
   const router = structuredClone(bases.router);
@@ -596,7 +610,9 @@ function ownBuild(pkg: string, task = "build"): string[] {
 }
 
 /**
- * The build steps `pnpm check` and `pnpm deploy` run, in order, from the repository root.
+ * The build steps `cf-os check` and `cf-os deploy` run, from the project root, as chains: the steps
+ * inside one chain run in order, and the chains are independent of each other, so they can run
+ * concurrently.
  *
  * Every one goes through `vp run` rather than `pnpm --filter <pkg> build`. Two of the three
  * submodule targets have no `build` *script* at all any more -- they have a Vite+ *task*, which
@@ -609,175 +625,58 @@ function ownBuild(pkg: string, task = "build"): string[] {
  * `vp` run only declared patterns survive, and an undeclared variable is dropped from the command
  * and from the fingerprint both.
  *
- * The ordering matters at the end: the frontend has to build before the router deploy picks up
- * `../workshop-frontend/dist` as its assets.
+ * The frontend and the router are separate chains even though the router serves
+ * `../workshop-frontend/dist`: it is the router's *deploy* that reads those assets, not its build,
+ * and every build finishes before anything deploys.
  */
-export function buildCommands(config: DeploymentConfig): BuildCommand[] {
+export function buildCommands(config: DeploymentConfig): BuildCommand[][] {
   return [
     // `build:app` first, and separately. `gatekeeper-context`'s `build` is a package.json script
     // that spawns `vp run --cache build:app` itself, and the outer `--no-cache` does not reach a
     // nested invocation carrying its own flag -- measured: the configurator app replayed from
     // cache. Rebuilding it here from source is what upstream's own `deploy` script does; the
     // `build` step below then type-checks and replays the bytes this step just wrote.
-    { args: submoduleBuild("@gadgets/gatekeeper-context", "build:app") },
-    { args: submoduleBuild("@gadgets/gatekeeper-context") },
+    [
+      { args: submoduleBuild("@gadgets/gatekeeper-context", "build:app") },
+      { args: submoduleBuild("@gadgets/gatekeeper-context") },
+    ],
     // The Scheduler's `build` nests the same cached `vp run build:app`, so it needs the same pair.
-    { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
-    { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
+    [
+      { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
+      { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
+    ],
     // A type-check only: wrangler's own build command runs capnweb-validate at deploy time.
-    { args: submoduleBuild("@gadgets/gatekeeper-websearch") },
-    { args: ownBuild("custom-gatekeeper") },
-    ...(config.errorReporting.enabled ? [{ args: ownBuild("error-reporter") }] : []),
+    [{ args: submoduleBuild("@gadgets/gatekeeper-websearch") }],
+    [{ args: ownBuild("custom-gatekeeper") }],
+    ...(config.errorReporting.enabled ? [[{ args: ownBuild("error-reporter") }]] : []),
     // Access mode is a build-time constant in the frontend bundle (`src/useAuth.ts`), so it is set
     // here rather than inherited: a bundle built under a different value is wrong, not just stale.
-    { args: submoduleBuild("@gadgets/workshop-frontend"), env: { VITE_CF_ACCESS_MODE: "true" } },
-    { args: submoduleBuild("@gadgets/router") },
-    { args: submoduleBuild("@gadgets/workshop-backend") },
+    [{ args: submoduleBuild("@gadgets/workshop-frontend"), env: { VITE_CF_ACCESS_MODE: "true" } }],
+    [{ args: submoduleBuild("@gadgets/router") }],
+    [{ args: submoduleBuild("@gadgets/workshop-backend") }],
   ];
 }
 
-// `allowTrailingComma` because wrangler accepts them and upstream uses them: the Scheduler's base
-// config closes `build`, `migrations` and `observability` with one. Without the option every such
-// comma is a parse *error*, so the deploy refuses a file wrangler itself reads happily.
-const jsoncOptions = { allowTrailingComma: true };
-
-async function readJsonc<T>(path: string): Promise<T> {
-  const errors: ParseError[] = [];
-  const result = parse(await readFile(path, "utf8"), errors, jsoncOptions) as T;
-  if (errors.length) {
-    const where = relative(root, path) || path;
-    throw new Error(`${where}: ${printParseErrorCode(errors[0].error)} at offset ${errors[0].offset}`);
-  }
-  return result;
-}
-
-// Every validateConfig message names a config path, so say which file those paths live in.
-async function readDeployment(path: string): Promise<DeploymentConfig> {
-  const config = await readJsonc<DeploymentConfig>(path);
-  try {
-    return validateConfig(config);
-  } catch (error) {
-    throw new Error(`${relative(root, path)}: ${(error as Error).message}`, { cause: error });
-  }
-}
-
-function runCommand(
-  command: string,
-  argv: string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  label: string,
-): void {
-  const result = spawnSync(command, argv, { cwd, env, stdio: "inherit" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    const where = relative(root, cwd) || ".";
-    throw new Error(`${where}: ${label} failed. Its output is above.`);
-  }
-}
-
-// Spawned through pnpmCommand rather than as a bare "pnpm": on Windows the pnpm on PATH is a `.cmd`
-// shim Node refuses to spawn without a shell, and `shell: true` would re-split argv and break any
-// checkout path containing a space.
-function run(args: string[], cwd = root, env: NodeJS.ProcessEnv = process.env): void {
-  const [command, argv] = pnpmCommand(args, env);
-  runCommand(command, argv, cwd, env, `pnpm ${args.join(" ")}`);
-}
-
 /**
- * `wrangler deploy` for one package, spawned as `node <entry>` when the entry point behind the
- * `.bin` shim can be found. That saves the ~0.33s `pnpm exec` costs per call and sidesteps the
- * Windows `.cmd` shim entirely; when it cannot be resolved, the pnpm path is still there.
+ * The Workers in deploy waves: those inside one wave can deploy concurrently, and each wave starts
+ * only once the one before has deployed. A service binding must name a Worker that already exists
+ * -- the Workers API rejects one to a script that does not -- so the Workshop, which binds every
+ * Gatekeeper and the Error Reporter, follows all of them, and the router, which binds the Workshop
+ * and every Gatekeeper, goes last. A failure before the router leaves the previous router version
+ * serving.
  */
-function deployWorker(dir: string, extraArgs: string[]): void {
-  const cwd = join(root, dir);
-  const args = ["deploy", "--config", generatedName, ...extraArgs];
-  const entry = resolveBinEntry(cwd, "wrangler");
-  if (entry) {
-    runCommand(process.execPath, [entry, ...args], cwd, process.env, `wrangler ${args.join(" ")}`);
-  } else {
-    run(["exec", "wrangler", ...args], cwd);
-  }
+export function deployWaves(config: DeploymentConfig): PackageKey[][] {
+  return [
+    [
+      ...(config.errorReporting.enabled ? ["errorReporter" as const] : []),
+      "context", "scheduler", "websearch", "customGatekeeper",
+    ],
+    ["workshop"],
+    ["router"],
+  ];
 }
 
-function requireSubmodule(): void {
-  if (!existsSync(join(root, "cloudflare-os/package.json"))) {
-    throw new Error("CloudflareOS submodule is not initialized. Run git submodule update --init.");
-  }
-}
-
-function build(config: DeploymentConfig): void {
-  for (const { args, env } of buildCommands(config)) {
-    run(args, root, env ? { ...process.env, ...env } : process.env);
-  }
-}
-
-// Said once, up front, rather than discovered when the first chat throws.
-function reportAiGateway(config: DeploymentConfig): void {
-  const gateway = aiGatewayPlan(config);
-  if (!gateway) {
-    console.warn(
-      "\naiGateway.enabled is false: this deployment advertises no model catalog, and each user " +
-      "supplies their own model API keys. A Workshop migrated from the hosted deploy will show an " +
-      "empty model picker -- see docs/migrate-from-hosted.md.");
-    return;
-  }
-  if (!gateway.needsToken) return;
-  // CLOUDFLARE_ACCOUNT_ID pins the account the way the deploys themselves are pinned: every
-  // generated config carries `account_id`, but `wrangler secret put` takes only `--name`
-  console.warn(
-    `\nCF_AI_GATEWAY_API_TOKEN is required by this configuration:\n` +
-    gateway.tokenReasons.map((reason) => `  - ${reason}`).join("\n") +
-    `\nInstall it before deploying:\n  CLOUDFLARE_ACCOUNT_ID=${config.accountId} ` +
-    `pnpm exec wrangler secret put CF_AI_GATEWAY_API_TOKEN ` +
-    `--name ${config.workers.workshop.name}\n`);
-}
-
-async function main(): Promise<void> {
-  requireSubmodule();
-  const config = await readDeployment(join(root, "deployment.jsonc"));
-  const generated = generateConfigs(config, {
-    router: await readJsonc(join(root, packageDirs.router, "wrangler.jsonc")),
-    workshop: await readJsonc(join(root, packageDirs.workshop, "wrangler.jsonc")),
-    context: await readJsonc(join(root, packageDirs.context, "wrangler.jsonc")),
-    scheduler: await readJsonc(join(root, packageDirs.scheduler, "wrangler.jsonc")),
-    websearch: await readJsonc(join(root, packageDirs.websearch, "wrangler.jsonc")),
-    customGatekeeper: await readJsonc(join(root, packageDirs.customGatekeeper, "wrangler.jsonc")),
-    errorReporter: await readJsonc(join(root, packageDirs.errorReporter, "wrangler.jsonc")),
-  });
-  reportAiGateway(config);
-
-  try {
-    for (const [name, generatedConfig] of Object.entries(generated)) {
-      await writeFile(
-        generatedPaths[name as keyof typeof generatedPaths],
-        JSON.stringify(generatedConfig, null, 2) + "\n");
-    }
-    const check = process.argv.includes("--check");
-    if (check) run(["test"]);
-    build(config);
-    const deployArgs = check ? ["--dry-run"] : [];
-    if (config.errorReporting.enabled) {
-      deployWorker(packageDirs.errorReporter, deployArgs);
-    }
-    deployWorker(packageDirs.context, deployArgs);
-    deployWorker(packageDirs.scheduler, deployArgs);
-    deployWorker(packageDirs.websearch, deployArgs);
-    deployWorker(packageDirs.customGatekeeper, deployArgs);
-    deployWorker(packageDirs.workshop, deployArgs);
-    // Last: it binds every one of the above.
-    deployWorker(packageDirs.router, deployArgs);
-  } finally {
-    await Promise.all(Object.values(generatedPaths).map((path) => rm(path, { force: true })));
-  }
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try {
-    await main();
-  } catch (error) {
-    // One line, no stack: every failure here is a config or subprocess problem, not a script bug.
-    console.error(`\nDeploy failed. ${(error as Error).message}`);
-    process.exitCode = 1;
-  }
+/** {@link deployWaves}, flattened: one order the Workers can deploy in, one at a time. */
+export function deployOrder(config: DeploymentConfig): PackageKey[] {
+  return deployWaves(config).flat();
 }
