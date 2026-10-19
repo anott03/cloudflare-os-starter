@@ -27,6 +27,8 @@ Inside the starter it is the `packages/cf-os` workspace package, and `pnpm cf-os
 
 Every command takes `--config <path>` (default: `deployment.jsonc` in the project root), `--account <id>` (the account `init` and `import` use, ahead of the file's `accountId`; `check`, `deploy` and `access` refuse one other than the file's), `--profile <name>` (passed to every `cf` call), and `--help`. It works from any directory inside the project.
 
+Optionally, instead of signing in, set `CLOUDFLARE_API_TOKEN` to a token with Access: Apps and Policies Edit and Access: Organizations, Identity Providers, and Groups Read (Edit, for `init` to add a One-time PIN provider), plus Read on Workers Scripts, Workers KV Storage, Workers R2 Storage, AI Gateway, Zone and DNS.
+
 ## Output and prompts
 
 Results meant for scripts are JSON on stdout: `import`'s values, `access`'s issuer and audience, the request a `--dry-run` would send, and what `update` did (whether the pin moved and was staged, the merge, the install, the brief's path and anything left to do; it exits 1 when something is left, even with the pin moved). Without a terminal, `update` holds back `pnpm install`'s output and shows only its end, if it fails. Everything else goes to stderr. Exit codes are 0 for success, 1 for failure, and 130 for a cancelled prompt.
