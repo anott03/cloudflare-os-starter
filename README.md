@@ -69,7 +69,7 @@ Install [Node.js 24.19 or newer](https://nodejs.org/) (the `cf-os` CLI is TypeSc
 npx cf-os init my-os
 ```
 
-It clones this starter and its submodule, installs, offers to create a private GitHub repository for it, and starts `pnpm cf-os init` (step 2). To clone by hand instead, run `git clone --recurse-submodules https://github.com/cloudflare/cloudflare-os-starter my-os`, `pnpm install` and `pnpm cf-os init`. A fork of this public repository has to stay public; for a private one, push the clone to an empty private repository instead. Either way, `deployment.jsonc` belongs in your repository, and `npx cf-os@latest update` brings in starter updates.
+It clones this starter and its submodule, installs, offers to create a private GitHub repository for it, and starts `pnpm cf-os init` (step 2). To clone by hand instead, run `git clone --recurse-submodules https://github.com/cloudflare/cloudflare-os-starter my-os`, then `pnpm install` and `pnpm cf-os init` inside `my-os`. A fork of this public repository has to stay public; for a private one, push the clone to an empty private repository instead. Either way, `deployment.jsonc` belongs in your repository, and `npx cf-os@latest update` brings in starter updates.
 
 `pnpm install` installs the submodule's own workspace too, from a `postinstall` hook. If you install with `--ignore-scripts`, run `pnpm cf-os install` afterwards; `pnpm cf-os check` says so if you forget.
 
@@ -84,9 +84,11 @@ Cloudflare OS supports several sign-in methods. This starter deploys [Cloudflare
 `pnpm cf-os init` does all of this: it asks for Worker names, a hostname, admin emails and the AI Gateway, with defaults read from your account, finds or creates the Access application, and writes `deployment.jsonc`. To do it by hand:
 
 1. Choose a public hostname in an [active Cloudflare zone](https://developers.cloudflare.com/dns/zone-setups/), such as `os.example.com`.
-2. Create a [self-hosted Access application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) for that hostname, or let `pnpm cf-os access` find or create it and fill in step 3 for you.
+2. Create a [self-hosted Access application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) for that hostname.
 3. Copy its [application audience tag](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/#get-your-aud-tag).
 4. Open [`deployment.jsonc`](deployment.jsonc) and replace the active placeholders. Every control is annotated in place.
+
+Or skip steps 2 and 3: fill in every placeholder except `access.issuer` and `access.audience`, then run `pnpm cf-os access` to find or create the application and write those two.
 
 The hostname belongs to the router, the only Worker here with a public route. Wrangler creates its DNS and TLS at deploy time. For an evaluation without a zone, switch the annotated route to `{ "workersDev": true }` and set `publicBaseUrl` to the resulting origin.
 
