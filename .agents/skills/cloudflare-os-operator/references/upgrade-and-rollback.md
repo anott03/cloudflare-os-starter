@@ -23,7 +23,7 @@ Audit the old-to-new change for:
 - Authentication and authorization behavior.
 - Shared RPC APIs and Gatekeeper contracts.
 - Durable Object classes, migration tags, and storage schemas.
-- Workshop, Router, and Gatekeeper Wrangler base configs, including any Gatekeeper newly added to upstream's `PREINSTALL` (`cloudflare-os/scripts/release/manifest-lib.ts`). The starter deploys every preinstalled Gatekeeper to stay on the hosted topology, so a new one needs a Worker and bindings in `packages/cf-os/src/core/deployment.ts`, and a row in the naming table in `core/naming.ts`.
+- Workshop, Router, and Gatekeeper Wrangler base configs, including any Gatekeeper newly added to upstream's `PREINSTALL` (`cloudflare-os/scripts/release/manifest-lib.ts`). A new one arrives as optional unless the catalog excludes it; see `references/updating.md`. Either way, report it.
 - Required vars, secrets, service bindings, KV, R2, assets, compatibility flags, and migrations.
 - AI transport, providers, billing, and logging.
 - Error reporting and frontend reporting.

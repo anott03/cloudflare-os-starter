@@ -42,7 +42,7 @@ const GLOBAL_OPTIONS = {
 const GLOBAL_HELP = [
   "  --config <path>    deployment file (default: deployment.jsonc in the project root)",
   "  --account <id>     Cloudflare account for init and import, ahead of the file's accountId;",
-  "                     check, deploy and access refuse one other than the file's",
+  "                     check, deploy, access and secrets refuse one other than the file's",
   "  --profile <name>   cf sign-in to use, passed to every cf call",
   "  -h, --help         this help",
 ];
@@ -105,6 +105,15 @@ const COMMANDS: Record<string, CommandSpec> = {
     positionals: 0,
     failure: "Access setup failed.",
     load: () => import("./commands/access.ts"),
+  },
+  secrets: {
+    summary: "ask for the optional Gatekeepers' OAuth credentials and set them on their Workers",
+    synopsis: "[<slug>...]",
+    help: ["  <slug>...   the Gatekeepers to set (default: every selected one that reads secrets)"],
+    options: {},
+    positionals: Infinity,
+    failure: "Setting secrets failed.",
+    load: () => import("./commands/secrets.ts"),
   },
   check: {
     summary: "validate, check the account, test, build, and dry-run every deploy",
@@ -338,19 +347,35 @@ function version(): string {
   return String(manifest.version);
 }
 
+/**
+ * Ends the process with exit code `code`. A failed or cancelled run exits once stdout and stderr have
+ * flushed, rather than waiting on a `cf` read still in flight, which is left to finish on its own: it
+ * may be refreshing a single-use token (see cf-client.ts `firstAlone`). A successful run is left to
+ * the event loop.
+ */
+export async function finish(code: number, exit: (code: number) => void = process.exit): Promise<void> {
+  if (code === 0) {
+    process.exitCode = code;
+    return;
+  }
+  await Promise.all([process.stdout, process.stderr].map((stream) =>
+    new Promise<void>((flushed) => stream.write("", () => flushed()))));
+  exit(code);
+}
+
 const self = realpathSync(fileURLToPath(import.meta.url));
 if (process.argv[1] && samePath(process.argv[1], self)) {
   const argv = process.argv.slice(2);
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
     process.stdout.write(`${version()}\n`);
   } else {
-    process.exitCode = await cli(argv, {
+    await finish(await cli(argv, {
       cwd: invocationDir(process.cwd(), process.env),
       env: process.env,
       self,
       out: consoleOutput(),
       prompter: terminalPrompter(),
       spawn: spawnSync,
-    });
+    }));
   }
 }

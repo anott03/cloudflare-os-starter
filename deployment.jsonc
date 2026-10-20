@@ -44,6 +44,12 @@
     "errorReporter": { "name": "<ERROR_REPORTER_WORKER_NAME>" }
   },
 
+  // Optional upstream Gatekeepers (GitHub, Slack, ...), keyed by slug, each its own Worker:
+  //   "github": { "name": "<router-name>-gk-github" }
+  // `pnpm cf-os init` offers them; `pnpm cf-os secrets` sets their OAuth credentials.
+  // Reference: docs/customization.md#optional-gatekeepers
+  "gatekeepers": {},
+
   // This starter deploys Cloudflare Access mode. Cloudflare OS also supports built-in password
   // accounts and auth Gatekeeper sign-in; see the reference below before switching. The audience
   // comes from the self-hosted Access application protecting the public hostname: `pnpm cf-os init`
@@ -96,9 +102,10 @@
     // }
   },
 
-  // Displayed to agents when the example custom integration is enabled in /admin.
+  // Displayed to agents when the example custom integration is enabled in /admin. false deploys none.
   // Reference: docs/customization.md#custom-gatekeepers
   "customGatekeeper": {
+    "enabled": true,
     "name": "<ORGANIZATION_DISPLAY_NAME>",
     "message": "<ORGANIZATION_GUIDANCE>"
   },

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { spawn as spawnProcess } from "node:child_process";
+import { once } from "node:events";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { CF_AUTH_HINT, cfClient, cfJson, cfList, listR2Buckets } from "./cf-client.ts";
+import { CF_AUTH_HINT, cfClient, cfJson, cfList, firstAlone, listR2Buckets, spawnCf, type SpawnCf } from "./cf-client.ts";
 import {
   CfAuthError,
   CfError,
@@ -12,14 +17,14 @@ import {
   issuerOf,
   workersDevSubdomainOf,
 } from "./core/client.ts";
-import { FAKE_ACCOUNT, fakeCf, flag, type FakeReply } from "./fake-cf.ts";
+import { FAKE_ACCOUNT, fakeCf, flag, workerSecretsReply, type FakeReply } from "./fake-cf.ts";
 
-test("pins the account and quiets the CLI on every call", () => {
+test("pins the account and quiets the CLI on every call", async () => {
   const { spawn, calls } = fakeCf({ "zero-trust organization get": { auth_domain: "acme.cloudflareaccess.com" } });
   const previous = process.env.CLOUDFLARE_ACCOUNT_ID;
   process.env.CLOUDFLARE_ACCOUNT_ID = "ffffffffffffffffffffffffffffffff";
   try {
-    cfJson(["zero-trust", "organization", "get"], { accountId: FAKE_ACCOUNT, spawn });
+    await cfJson(["zero-trust", "organization", "get"], { accountId: FAKE_ACCOUNT, spawn });
   } finally {
     if (previous === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
     else process.env.CLOUDFLARE_ACCOUNT_ID = previous;
@@ -31,15 +36,15 @@ test("pins the account and quiets the CLI on every call", () => {
   assert.deepEqual(calls[0].args, ["zero-trust", "organization", "get"]);
 });
 
-test("returns the bare result, and unwraps an API envelope if one is printed", () => {
+test("returns the bare result, and unwraps an API envelope if one is printed", async () => {
   const bare = fakeCf({ "kv namespaces list": [{ id: "a", title: "t" }] });
-  assert.deepEqual(cfJson(["kv", "namespaces", "list"], { accountId: FAKE_ACCOUNT, spawn: bare.spawn }),
+  assert.deepEqual(await cfJson(["kv", "namespaces", "list"], { accountId: FAKE_ACCOUNT, spawn: bare.spawn }),
     [{ id: "a", title: "t" }]);
   const enveloped = fakeCf({
     "zero-trust organization get": { success: true, errors: [], messages: [], result: { auth_domain: "x" } },
   });
   assert.deepEqual(
-    cfJson(["zero-trust", "organization", "get"], { accountId: FAKE_ACCOUNT, spawn: enveloped.spawn }),
+    await cfJson(["zero-trust", "organization", "get"], { accountId: FAKE_ACCOUNT, spawn: enveloped.spawn }),
     { auth_domain: "x" });
 });
 
@@ -48,47 +53,84 @@ function workersListAnswering(reply: FakeReply) {
   return { accountId: FAKE_ACCOUNT, spawn: fakeCf({ "workers list": reply }).spawn };
 }
 
-test("maps missing or rejected credentials to the login hint, and other failures to CfError", () => {
+test("maps missing or rejected credentials to the login hint, and other failures to CfError", async () => {
   const options = workersListAnswering;
   for (const fail of [
     "No authentication token found.",
     "[9106] Authentication failed (status: 400)",
     "[10000] Authentication error",
   ]) {
-    assert.throws(() => cfJson(["workers", "list"], options({ fail })), (error: unknown) => {
+    await assert.rejects(cfJson(["workers", "list"], options({ fail })), (error: unknown) => {
       assert.ok(error instanceof CfAuthError, `${fail} was not an auth error`);
       assert.ok(error.message.includes(CF_AUTH_HINT));
       return true;
     });
   }
-  assert.throws(
-    () => cfJson(["workers", "list"], options({ fail: "[7003] Could not route to /accounts/x" })),
+  await assert.rejects(
+    cfJson(["workers", "list"], options({ fail: "[7003] Could not route to /accounts/x" })),
     (error: unknown) => error instanceof CfError && !(error instanceof CfAuthError) &&
       /cf workers list: APIError \[7003\] Could not route/.test(error.message));
-  assert.throws(
-    () => cfJson(["workers", "list"], {
+  await assert.rejects(
+    cfJson(["workers", "list"], {
       accountId: FAKE_ACCOUNT,
-      spawn: () => ({ status: 0, stdout: "not json", stderr: "" }),
+      spawn: async () => ({ status: 0, stdout: "not json", stderr: "" }),
     }),
     /printed something other than JSON/);
-  assert.throws(
-    () => cfJson(["workers", "list"], {
+  await assert.rejects(
+    cfJson(["workers", "list"], {
       accountId: FAKE_ACCOUNT,
-      spawn: () => ({ status: null, stdout: "", stderr: "", error: new Error("ENOENT") }),
+      spawn: async () => ({ status: null, stdout: "", stderr: "", error: new Error("ENOENT") }),
     }),
     (error: unknown) => error instanceof CfUnavailableError && /could not run cf: ENOENT/.test(error.message));
 });
 
-test("lists every page, not just the first", () => {
+/** A client whose `cf workers secrets list` fails with `fail`. */
+function failingSecretsList(fail: string) {
+  return cfClient({ spawn: fakeCf({ "workers secrets list": { fail } }).spawn });
+}
+
+test("lists a Worker's secret names, and reads a Worker the account does not have as null", async () => {
+  const { spawn, calls } = fakeCf({ "workers secrets list": workerSecretsReply({ "acme-gk-github": ["CLIENT_ID"] }) });
+  const client = cfClient({ spawn });
+  assert.deepEqual(await client.listWorkerSecrets(FAKE_ACCOUNT, "acme-gk-github"), ["CLIENT_ID"]);
+  assert.deepEqual(calls[0].args, ["workers", "secrets", "list", "--script-name", "acme-gk-github"]);
+  assert.equal(calls[0].env.CLOUDFLARE_ACCOUNT_ID, FAKE_ACCOUNT);
+  // `cf`'s own words for a missing Worker: the API's code 10007, boxed on stderr.
+  assert.equal(await client.listWorkerSecrets(FAKE_ACCOUNT, "acme-gk-slack"), null);
+  // Any other failure is still one.
+  await assert.rejects(failingSecretsList("[10000] Authentication error").listWorkerSecrets(FAKE_ACCOUNT, "acme-gk-github"),
+    (error: unknown) => error instanceof CfAuthError);
+  await assert.rejects(failingSecretsList("[10013] internal error").listWorkerSecrets(FAKE_ACCOUNT, "acme-gk-github"),
+    (error: unknown) => error instanceof CfError && /\[10013\]/.test(error.message));
+  await assert.rejects(
+    cfClient({ spawn: fakeCf({ "workers secrets list": { name: "CLIENT_ID" } }).spawn })
+      .listWorkerSecrets(FAKE_ACCOUNT, "acme-gk-github"),
+    /expected a JSON array/);
+});
+
+test("lists every page, not just the first", async () => {
   const workers = Array.from({ length: 230 }, (_, i) => ({ name: `w${i}` }));
   const { spawn, calls } = fakeCf({ "workers list": workers });
-  const listed = cfList<{ name: string }>(["workers", "list"], { accountId: FAKE_ACCOUNT, spawn });
+  const listed = await cfList<{ name: string }>(["workers", "list"], { accountId: FAKE_ACCOUNT, spawn });
   assert.equal(listed.length, 230);
   assert.deepEqual(calls.map((call) => call.args.slice(-4)), [
     ["--page", "1", "--per-page", "100"],
     ["--page", "2", "--per-page", "100"],
     ["--page", "3", "--per-page", "100"],
   ]);
+});
+
+test("fetches one page at a time, each only once the one before it is in", async () => {
+  const workers = Array.from({ length: 230 }, (_, i) => ({ name: `w${i}` }));
+  let settled = 0;
+  // The first page slowest, so a page started early would show up as starting before it settled.
+  const fake = fakeCf({ "workers list": workers }, {
+    delay: (args) => flag(args, "--page") === "1" ? 30 : 1,
+    stamp: () => settled,
+  });
+  const spawn: SpawnCf = (...args) => fake.spawn(...args).finally(() => settled++);
+  await cfList(["workers", "list"], { accountId: FAKE_ACCOUNT, spawn });
+  assert.deepEqual(fake.calls.map((call) => [flag(call.args, "--page"), call.at]), [["1", 0], ["2", 1], ["3", 2]]);
 });
 
 test("pages accounts within the API's 50-per-page ceiling", async () => {
@@ -106,12 +148,12 @@ test("lists Access applications unfiltered, so a covering wildcard one is among 
   assert.ok(!calls[0].args.includes("--domain") && !calls[0].args.includes("--exact"));
 });
 
-test("reads R2's wrapped bucket list", () => {
+test("reads R2's wrapped bucket list", async () => {
   const { spawn } = fakeCf({ "r2 buckets list": { buckets: [{ name: "a" }, { name: "b" }] } });
-  assert.deepEqual(listR2Buckets({ accountId: FAKE_ACCOUNT, spawn }), ["a", "b"]);
+  assert.deepEqual(await listR2Buckets({ accountId: FAKE_ACCOUNT, spawn }), ["a", "b"]);
 });
 
-test("pages R2 by name, since cf prints no cursor", () => {
+test("pages R2 by name, since cf prints no cursor", async () => {
   // Unpaged, the API returns 20; a bucket past the first page would read as missing.
   const all = Array.from({ length: 2500 }, (_, i) => ({ name: `bucket-${String(i).padStart(4, "0")}` }));
   const { spawn, calls } = fakeCf({
@@ -121,7 +163,7 @@ test("pages R2 by name, since cf prints no cursor", () => {
       return { buckets: all.slice(start, start + Number(flag(args, "--per-page") ?? 20)) };
     },
   });
-  const names = listR2Buckets({ accountId: FAKE_ACCOUNT, spawn });
+  const names = await listR2Buckets({ accountId: FAKE_ACCOUNT, spawn });
   assert.equal(names.length, 2500);
   assert.equal(names.at(-1), "bucket-2499");
   assert.deepEqual(calls.map((call) => flag(call.args, "--start-after")), [undefined, "bucket-0999", "bucket-1999"]);
@@ -202,6 +244,124 @@ test("derives the workers.dev subdomain from any Worker's address", async () => 
   assert.equal(workersDevSubdomainOf([]), null);
   const { spawn } = fakeCf({ "workers list": [{ name: "w", subdomain: { url: "https://w.team.workers.dev" } }] });
   assert.equal(await cfClient({ spawn }).workersDevSubdomain(FAKE_ACCOUNT), "team");
+});
+
+test("reads the workers.dev subdomain with the very calls that list the Workers", async () => {
+  const workers = Array.from({ length: 150 }, (_, i) => ({ name: `w${i}`, subdomain: { url: `https://w${i}.team.workers.dev` } }));
+  const listed = fakeCf({ "workers list": workers });
+  await cfClient({ spawn: listed.spawn }).listWorkers(FAKE_ACCOUNT);
+  const derived = fakeCf({ "workers list": workers });
+  assert.equal(await cfClient({ spawn: derived.spawn }).workersDevSubdomain(FAKE_ACCOUNT), "team");
+  assert.equal(derived.calls.length, 2);
+  assert.deepEqual(derived.calls.map((call) => call.args), listed.calls.map((call) => call.args));
+});
+
+test("spawns a process to completion, collecting its exit status and UTF-8 output", async () => {
+  const script = "process.stdout.write('{\"name\":\"é\"}'); process.stderr.write('warned'); process.exit(3)";
+  assert.deepEqual(await spawnCf(process.execPath, ["-e", script], { cwd: process.cwd(), env: process.env }),
+    { status: 3, stdout: "{\"name\":\"é\"}", stderr: "warned" });
+});
+
+test("reports a command that cannot be spawned as an error, not an exit status", async () => {
+  const result = await spawnCf("cf-os-test-no-such-command", [], { cwd: process.cwd(), env: process.env });
+  assert.equal(result.status, null);
+  assert.match(result.error?.message ?? "", /ENOENT/);
+});
+
+test("leaves a cf process to finish when a terminal's Ctrl-C interrupts this one", { skip: process.platform === "win32" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "cf-os-sigint-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const marker = join(dir, "finished");
+  // The marker's path reaches each process as an argument, not as code.
+  const read = 'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], ""), 4000)';
+  // In a process group of its own, as a command at a terminal is: SIGINT to the group is Ctrl-C.
+  const script = `
+    import { spawnCf } from ${JSON.stringify(new URL("./cf-client.ts", import.meta.url).href)};
+    spawnCf(process.execPath, ["-e", ${JSON.stringify(read)}, process.argv[1]], { cwd: process.cwd(), env: { ...process.env, CLOUDFLARE_API_TOKEN: "unused" } });
+    setTimeout(() => process.kill(-process.pid, "SIGINT"), 200);
+  `;
+  const command = spawnProcess(process.execPath, ["--input-type=module", "-e", script, marker], { detached: true, stdio: "ignore" });
+  const [, signal] = await once(command, "exit");
+  assert.equal(signal, "SIGINT");
+  assert.ok(!existsSync(marker), "the read finished before the interrupt");
+  for (let waited = 0; !existsSync(marker) && waited < 15000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(existsSync(marker), "the interrupt ended the read too");
+});
+
+test("runs the first cf call of every burst alone, and the ones asked for meanwhile at once after it", async (t) => {
+  const previous = process.env.CLOUDFLARE_API_TOKEN;
+  delete process.env.CLOUDFLARE_API_TOKEN;
+  t.after(() => {
+    if (previous !== undefined) process.env.CLOUDFLARE_API_TOKEN = previous;
+  });
+  const replies = { "workers list": [], "kv namespaces list": [], "r2 buckets list": { buckets: [] } };
+  /** Each call stamped with how many calls had settled when it was spawned. */
+  const reading = () => {
+    let settled = 0;
+    const cf = fakeCf(replies, { delay: () => 5, stamp: () => settled });
+    const counted: SpawnCf = (...args) => cf.spawn(...args).finally(() => settled++);
+    const client = cfClient({ spawn: firstAlone(counted) });
+    return { cf, read: () => Promise.all([client.listWorkers(FAKE_ACCOUNT), client.listKvNamespaces(FAKE_ACCOUNT), client.listR2Buckets(FAKE_ACCOUNT)]) };
+  };
+  const held = reading();
+  await held.read();
+  // The second and third waited for the first, then started together.
+  assert.deepEqual(held.cf.calls.map((call) => [call.args.slice(0, 2).join(" "), call.at]),
+    [["workers list", 0], ["kv namespaces", 1], ["r2 buckets", 1]]);
+  // After an idle spell the token may have expired since, so the next burst's first call goes alone too.
+  await held.read();
+  assert.deepEqual(held.cf.calls.slice(3).map((call) => call.at), [3, 4, 4]);
+  // A call asked for while a burst runs joins it: the burst's first call has refreshed already.
+  const first = held.read();
+  // Until the held two have started, which leaves them their 5 ms to run.
+  while (held.cf.calls.length < 9) await new Promise((resolve) => setImmediate(resolve));
+  await Promise.all([first, held.read()]);
+  assert.deepEqual(held.cf.calls.slice(6).map((call) => call.at), [6, 7, 7, 7, 7, 7]);
+
+  // A token never needs refreshing, so with one set nothing waits for the first either.
+  process.env.CLOUDFLARE_API_TOKEN = "token";
+  const unheld = reading();
+  await unheld.read();
+  assert.deepEqual(unheld.cf.calls.map((call) => call.at), [0, 0, 0]);
+});
+
+test("spawns the run's first cf process alone", async () => {
+  // A module instance of its own, whose first call is still to come.
+  const instance = "./cf-client.ts?first-alone";
+  const { spawnCf: fresh } = await import(instance) as typeof import("./cf-client.ts");
+  const env = { ...process.env };
+  delete env.CLOUDFLARE_API_TOKEN;
+  const options = { cwd: process.cwd(), env };
+  const [first, second] = await Promise.all([
+    fresh(process.execPath, ["-e", "setTimeout(() => process.stdout.write(String(Date.now())), 30)"], options),
+    fresh(process.execPath, ["-e", "process.stdout.write(String(Date.now()))"], options),
+  ]);
+  assert.ok(Number(second.stdout) >= Number(first.stdout), `${second.stdout} started before ${first.stdout} ended`);
+});
+
+/** A {@link SpawnCf} settling with `result` a few milliseconds after it is called, as a real process does. */
+const later = (result: Awaited<ReturnType<SpawnCf>>): SpawnCf => () =>
+  new Promise((resolve) => setTimeout(() => resolve(result), 5));
+
+test("maps a spawn that fails or exits non-zero later, as cf does, to the same errors", async () => {
+  await assert.rejects(
+    cfJson(["workers", "list"], {
+      accountId: FAKE_ACCOUNT,
+      spawn: later({ status: null, stdout: "", stderr: "", error: new Error("spawn node EACCES") }),
+    }),
+    (error: unknown) => error instanceof CfUnavailableError &&
+      error.message === "cf workers list: could not run cf: spawn node EACCES");
+  await assert.rejects(
+    cfJson(["workers", "list"], {
+      accountId: FAKE_ACCOUNT,
+      spawn: later({ status: 1, stdout: "", stderr: "\n┌ APIError\n│ [10000] Authentication error\n└\n" }),
+    }),
+    (error: unknown) => error instanceof CfAuthError &&
+      error.message === `cf workers list: APIError [10000] Authentication error -- ${CF_AUTH_HINT}.`);
+  await assert.rejects(
+    cfJson(["workers", "list"], { accountId: FAKE_ACCOUNT, spawn: later({ status: 2, stdout: "", stderr: "" }) }),
+    (error: unknown) => error instanceof CfError && !(error instanceof CfAuthError) &&
+      error.message === "cf workers list: exited with status 2");
 });
 
 test("reports signed out as an answer, not an error", async () => {

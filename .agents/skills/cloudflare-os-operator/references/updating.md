@@ -40,13 +40,14 @@ A dependency's new major can need code changes as well as a version bump, such a
 - Vars a Worker reads that no base config declares, in `env.d.ts` or as `env.X ?? <default>` in its code. Upstream's deploy service sets these itself, so `generateConfigs()` has to as well, and nothing fails without them: Web Search's `CF_AI_GATEWAY` silently falls back to `default`.
 - New bindings.
 - Routes that need adding to lists the starter overrides, such as `assets.run_worker_first`.
+- Optional Gatekeepers' configs are upstream's plus the common block, their `vars` and `BASE_URL`; a var upstream's deploy service starts setting for them goes in `generateConfigs()`, and a new `var` input fails `check` until `gatekeepers.<slug>.vars` sets it (`init` does not ask).
 - A change in how upstream produces its configs.
 
 `pnpm cf-os check` generates and validates the configs, so it is the test for this section.
 
 ## A New Upstream Gatekeeper Or Worker *(starter)*
 
-The starter deploys a fixed set of Workers. A Gatekeeper newly added to upstream's `PREINSTALL` (`cloudflare-os/scripts/release/manifest-lib.ts`) needs all of:
+The starter's own Workers are a fixed set; upstream's other Gatekeepers come from the catalog (`packages/cf-os/src/gatekeeper-catalog.ts`), so a new one, even a new `PREINSTALL`, arrives as optional unless the catalog excludes it, which `check` reports. Say which in the summary. Making one built-in, to keep the hosted topology or deploy an excluded one, needs all of:
 
 - A `PACKAGE_DIRS` entry.
 - Bindings to it from the Workshop and the router in `generateConfigs()`.
@@ -55,12 +56,17 @@ The starter deploys a fixed set of Workers. A Gatekeeper newly added to upstream
 - A row in `packages/cf-os/src/core/naming.ts`.
 - A `workers` entry in `deployment.jsonc`, and in the template the starter ships.
 - Any secrets it requires.
+- Provisioning for any storage it declares, as `deployment.ts` does for Context's KV.
+
+The naming row also makes its slug a built-in one, so a deployment that had selected it under `gatekeepers` fails `check` until the entry moves to `workers`.
+
+A selected Gatekeeper the new pin excludes fails `check` on `gatekeepers.<slug>` with the reason. Report it to the operator, and do not work around it in `deployment.jsonc`.
 
 A `gatekeeper-*` package without a `wrangler.jsonc` is a library, not a Worker.
 
 ## Build Tooling *(starter)*
 
-Watch for upstream turning a package's `build` script into a Vite+ task, or changing the shape of its vite-plus config. A task and a script with the same name break the task graph. A filter that matches nothing exits 0, so the deploy ships the old bundle. Check that `buildCommands()` still rebuilds every package from source.
+Watch for upstream turning a package's `build` script into a Vite+ task, or changing the shape of its vite-plus config. A task and a script with the same name break the task graph. A filter that matches nothing exits 0, so the deploy ships the old bundle. Check that `buildCommands()` still rebuilds every package from source. An optional Gatekeeper is built in one step, `vp run -F <package name> --no-cache build`, which relies on its `build` task depending on `build:configurator` (`cloudflare-os/scripts/gatekeeper-configurator-vite-config.ts`); if that dependency goes, it needs its own step.
 
 ## Renames
 

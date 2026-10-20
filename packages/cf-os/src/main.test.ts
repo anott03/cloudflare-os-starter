@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { cli, invocationDir, type CliDeps } from "./main.ts";
+import { cli, finish, invocationDir, type CliDeps } from "./main.ts";
 import { DELEGATION_SENTINEL, type SpawnDelegate } from "./project.ts";
 import { scratchProject, TEMPLATE } from "./test-support.ts";
 
@@ -74,7 +74,7 @@ test("prints usage and fails on no command or an unknown one", async (t) => {
 
 test("prints each command's help on stdout, anywhere", async (t) => {
   const cwd = tempDir(t);
-  for (const name of ["init", "import", "access", "check", "deploy", "update", "install"]) {
+  for (const name of ["init", "import", "access", "secrets", "check", "deploy", "update", "install"]) {
     const { code, stdout } = await run(t, [name, "--help"], { cwd });
     assert.equal(code, 0, name);
     assert.match(stdout, new RegExp(`^Usage: cf-os ${name}\\b`), name);
@@ -87,7 +87,7 @@ test("prints each command's help on stdout, anywhere", async (t) => {
 
 test("outside a project, only init and update run", async (t) => {
   const cwd = tempDir(t);
-  for (const name of ["import", "access", "check", "deploy", "install"]) {
+  for (const name of ["import", "access", "secrets", "check", "deploy", "install"]) {
     const { code, log } = await run(t, [name], { cwd });
     assert.equal(code, 1, name);
     assert.match(log, /Run `cf-os init <dir>` to create one/, name);
@@ -184,6 +184,70 @@ test("install runs, and says what to do, with no submodule checked out", (t) => 
   assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND|Cannot find/);
 });
 
+test("a cancelled or failed run exits once its output has flushed; a successful one leaves the exit to the event loop", async (t) => {
+  const before = process.exitCode;
+  t.after(() => {
+    process.exitCode = before;
+  });
+  const order: string[] = [];
+  // Each stream reports its write done a turn of the event loop later, as a pipe does. The test
+  // runner's own output, on stdout too, is not finish's, and goes through.
+  const writes = (["stdout", "stderr"] as const).map((name) => {
+    const write = process[name].write.bind(process[name]) as (chunk: string, done?: () => void) => boolean;
+    return t.mock.method(process[name], "write", (chunk: string, done?: () => void) => {
+      if (chunk !== "") return write(chunk, done);
+      order.push(`${name} write`);
+      setImmediate(() => {
+        order.push(`${name} flushed`);
+        done?.();
+      });
+      return true;
+    });
+  });
+  const exits: number[] = [];
+  await finish(130, (code) => {
+    order.push("exit");
+    exits.push(code);
+  });
+  assert.deepEqual(exits, [130]);
+  assert.deepEqual(order, ["stdout write", "stderr write", "stdout flushed", "stderr flushed", "exit"]);
+  assert.equal(process.exitCode, before, "set the exit code it exits with");
+
+  // A failed run exits the same way, so the reads still running beside the failed one end with it.
+  order.length = 0;
+  await finish(1, (code) => {
+    order.push("exit");
+    exits.push(code);
+  });
+  for (const write of writes) write.mock.restore();
+  assert.deepEqual(exits, [130, 1]);
+  assert.deepEqual(order, ["stdout write", "stderr write", "stdout flushed", "stderr flushed", "exit"]);
+
+  await finish(0, (code) => exits.push(code));
+  assert.deepEqual(exits, [130, 1]);
+  assert.equal(process.exitCode, 0);
+});
+
+test("a failed run exits without waiting on the cf reads still running beside it, which finish on their own", async (t) => {
+  // A cf child that runs for 4 s, then a failure: the process exits at once, and the child carries on.
+  const dir = tempDir(t);
+  const marker = join(dir, "finished");
+  // The marker's path reaches each process as an argument, not as code.
+  const read = 'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], ""), 4000)';
+  const script = `
+    import { spawnCf } from ${JSON.stringify(join(SRC, "cf-client.ts"))};
+    import { finish } from ${JSON.stringify(MAIN)};
+    const env = { ...process.env, CLOUDFLARE_API_TOKEN: "unused" };
+    spawnCf(process.execPath, ["-e", ${JSON.stringify(read)}, process.argv[1]], { cwd: process.cwd(), env });
+    await finish(1);
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, marker], { encoding: "utf8", timeout: 15000 });
+  assert.equal(result.status, 1, result.stderr);
+  assert.ok(!existsSync(marker), "waited for the read to finish before exiting");
+  for (let waited = 0; !existsSync(marker) && waited < 15000; waited += 50) await new Promise((done) => setTimeout(done, 50));
+  assert.ok(existsSync(marker), "the read was ended with the process");
+});
+
 /** A module's imports: static ones (`import type` excluded: erased) and literal dynamic ones. */
 function importsOf(file: string): { static: string[]; dynamic: string[] } {
   const source = readFileSync(file, "utf8");
@@ -224,6 +288,16 @@ test("the packed path never reaches @gadgets/scripts", () => {
   // What a global install gets is exactly that: everything else is the project copy's, from its own install.
   const manifest = JSON.parse(readFileSync(join(SRC, "..", "package.json"), "utf8"));
   assert.deepEqual(Object.keys(manifest.dependencies), ["@clack/prompts"]);
+});
+
+test("init and secrets load without the submodule, to refuse or fail as they would", () => {
+  // Checked out without it, @gadgets/scripts resolves to nothing: those that read upstream load it
+  // lazily (gatekeeper-catalog.ts, local-bin.ts, cf-client.ts through the context's client).
+  for (const command of ["init", "secrets"]) {
+    const { files, packages } = staticClosure([join(SRC, "commands", `${command}.ts`)]);
+    const reached = [...packages].filter((name) => name.startsWith("@gadgets/"));
+    assert.deepEqual(reached, [], `${command}: reachable from ${[...files].map((file) => relative(SRC, file)).join(", ")}`);
+  }
 });
 
 test("the core is pure: no CLI shell, no cf subprocess, no prompts", () => {

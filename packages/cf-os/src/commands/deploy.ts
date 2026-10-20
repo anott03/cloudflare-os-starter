@@ -2,9 +2,9 @@
 //
 // Both validate the deployment file, generate every Worker's `wrangler.prod.jsonc`
 // (core/deployment.ts), confirm against the account that what the file names exists
-// (core/verify-account.ts), and build. `check` runs the test suites first and dry-runs each deploy;
-// `deploy` deploys for real, with no confirmation. The generated configs are removed afterwards
-// either way.
+// (core/verify-account.ts), warn about any optional Gatekeeper's secrets not set yet, and build.
+// `check` runs the test suites first and dry-runs each deploy; `deploy` deploys for real, with no
+// confirmation. The generated configs are removed afterwards either way.
 //
 // The builds run concurrently (run-tasks.ts), each command's output printed as one block when it
 // finishes, and the first failure cancels the rest: the deploy is doomed either way, so there is no
@@ -16,8 +16,10 @@
 // and only the next wave is held back. With the router last, any failure leaves the previous router
 // serving.
 //
+// Secrets `cf-os init` asked for come in memory and are set once every Worker exists (gatekeeper-secrets.ts).
+//
 // Wrangler deploys, not `cf deploy`: `cf deploy` takes no `--config` and works one project per
-// directory, so it cannot deploy seven Workers from generated configs.
+// directory, so it cannot deploy a set of Workers from generated configs.
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -26,25 +28,39 @@ import { join, relative } from "node:path";
 import { resolveBinEntry } from "@gadgets/scripts/bin-entry";
 import { pnpmCommand } from "../pnpm-command.ts";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
+import { prefetch } from "../cached-reads.ts";
 import { configPath, displayPath, type CommandArgs, type Context } from "../context.ts";
+import type { CloudflareClient } from "../core/client.ts";
 import type { BaseConfigs, BuildCommand, DeploymentConfig } from "../core/deployment-config.ts";
 import {
   aiGatewayPlan,
   buildCommands,
   deployOrder,
   deployWaves,
+  gatekeeperSlugs,
+  gatekeeperWorkerId,
   GENERATED_NAME,
   generateConfigs,
+  generatedOutputs,
   PACKAGE_DIRS,
   PlaceholderError,
   publicOrigin,
   validateConfig,
+  validateGatekeepers,
+  workerDir,
+  workerName,
   type PackageKey,
+  type WorkerId,
 } from "../core/deployment.ts";
 import { placeholderPaths } from "../core/edits.ts";
-import { verifyAccount } from "../core/verify-account.ts";
+import { undeclaredVarWarnings, type GatekeeperCatalog } from "../core/gatekeepers.ts";
+import { gatekeeperSecretWarnings, prose, verifyAccount } from "../core/verify-account.ts";
 import { parseDeployment } from "../deployment-file.ts";
+import { loadCatalog } from "../gatekeeper-catalog.ts";
+import { waitOn } from "../prompt.ts";
+import { configFlag, secretsCommand, uploadSecrets, withRetry, type PendingSecrets } from "../gatekeeper-secrets.ts";
 import { CancelledError, concurrencyLimit, mapConcurrent, runCaptured } from "../run-tasks.ts";
+import { defaultSpawn, type SpawnTool } from "../tools.ts";
 import { check as checkSubmoduleInstall } from "./install.ts";
 
 // `allowTrailingComma` because wrangler accepts them and upstream uses them: the Scheduler's base
@@ -62,7 +78,10 @@ async function readJsonc<T>(root: string, path: string): Promise<T> {
   return result;
 }
 
-/** Every Worker's upstream base config, read from its package. */
+/**
+ * The base config of every Worker in {@link PACKAGE_DIRS}, read from its package. An optional
+ * Gatekeeper's comes with its catalog entry.
+ */
 async function readBaseConfigs(root: string): Promise<BaseConfigs> {
   const entries = await Promise.all(Object.entries(PACKAGE_DIRS).map(async ([key, dir]) =>
     [key, await readJsonc(root, join(root, dir, "wrangler.jsonc"))] as const));
@@ -120,8 +139,8 @@ async function settle(tasks: Promise<unknown>): Promise<void> {
 }
 
 /** Every chain from `buildCommands`, concurrently. The first failure cancels the rest. */
-async function buildAll(ctx: Context, config: DeploymentConfig): Promise<void> {
-  const chains = buildCommands(config);
+async function buildAll(ctx: Context, config: DeploymentConfig, catalog: GatekeeperCatalog): Promise<void> {
+  const chains = buildCommands(config, catalog);
   const limit = concurrencyLimit();
   ctx.out.log(`\nBuilding ${chains.length} packages, ${Math.min(limit, chains.length)} at a time.`);
   const abort = new AbortController();
@@ -143,11 +162,16 @@ async function buildAll(ctx: Context, config: DeploymentConfig): Promise<void> {
  * refresh token, with no lock: started together, every deploy would spend the same one, and all but
  * the first would fail, or sign wrangler out. Alone, it refreshes once, and the rest read the result.
  */
-async function deployAll(ctx: Context, config: DeploymentConfig, check: boolean): Promise<void> {
+async function deployAll(
+  ctx: Context,
+  config: DeploymentConfig,
+  catalog: GatekeeperCatalog,
+  check: boolean,
+): Promise<void> {
   const waves = check ? [deployOrder(config)] : deployWaves(config);
   for (const [index, wave] of waves.entries()) {
-    ctx.out.log(`\n${check ? "Dry-running the deploys of" : "Deploying"} ${wave.map((key) => config.workers[key]!.name).join(", ")}.`);
-    const deploy = (key: PackageKey) => deployWorker(ctx, PACKAGE_DIRS[key], check ? ["--dry-run"] : []);
+    ctx.out.log(`\n${check ? "Dry-running the deploys of" : "Deploying"} ${wave.map((id) => workerName(config, id)).join(", ")}.`);
+    const deploy = (id: WorkerId) => deployWorker(ctx, workerDir(id, catalog), check ? ["--dry-run"] : []);
     let rest = wave;
     if (!check && index === 0) {
       await settle(deploy(wave[0]));
@@ -193,11 +217,52 @@ function reportAiGateway(ctx: Context, config: DeploymentConfig): void {
 }
 
 /**
+ * The warnings about each optional Gatekeeper secret not set yet, their reads started. The
+ * Gatekeepers in `pending` are left out: their secrets are set once the deploy is done.
+ */
+function secretWarnings(
+  ctx: Context,
+  client: CloudflareClient,
+  config: DeploymentConfig,
+  catalog: GatekeeperCatalog,
+  pending: PendingSecrets[],
+): Promise<string[]> {
+  const unset = Object.entries(config.gatekeepers ?? {})
+    .filter(([slug]) => !pending.some(({ gatekeeper }) => gatekeeper === slug));
+  return gatekeeperSecretWarnings(client, { ...config, gatekeepers: Object.fromEntries(unset) }, catalog, configFlag(ctx));
+}
+
+/**
+ * Prints {@link secretWarnings}' `warnings`. Never fails: the Worker deploys without the secrets, and
+ * only connecting through it waits on them.
+ */
+async function warnMissingSecrets(ctx: Context, warnings: Promise<string[]>, pending: PendingSecrets[]): Promise<void> {
+  for (const warning of await waitOn(ctx.prompter, "Checking the Gatekeepers' secrets", () => warnings)) {
+    ctx.out.log(`\n${warning}`);
+  }
+  for (const { worker, values } of pending) {
+    ctx.out.log(`\n${worker}'s ${prose(Object.keys(values), "and")} will be set once it is deployed.`);
+  }
+}
+
+/**
  * Fails on anything the deployment file names that the account does not have. Before the build, so
  * a wrong AUD tag or KV ID costs seconds rather than a full build, and well before anything deploys.
+ * Then warns about missing Gatekeeper secrets, which fail nothing.
  */
-async function checkAccount(ctx: Context, config: DeploymentConfig, where: string): Promise<void> {
-  const result = await verifyAccount(await ctx.client(), config, publicOrigin(config));
+async function checkAccount(
+  ctx: Context,
+  config: DeploymentConfig,
+  where: string,
+  catalog: GatekeeperCatalog,
+  pending: PendingSecrets[],
+): Promise<void> {
+  const client = await ctx.client();
+  // Read beside the account check, though printed only once it passes.
+  const warnings = secretWarnings(ctx, client, config, catalog, pending);
+  prefetch(warnings);
+  const result = await waitOn(ctx.prompter, "Checking the account against the deployment file",
+    () => verifyAccount(client, config, publicOrigin(config)));
   if ("skipped" in result) {
     ctx.out.log(`\nSkipped Cloudflare-side checks: ${result.skipped}`);
     return;
@@ -208,31 +273,108 @@ async function checkAccount(ctx: Context, config: DeploymentConfig, where: strin
       result.problems.map((problem) => `  - ${problem}`).join("\n"));
   }
   ctx.out.log("\nCloudflare-side checks passed: Access application, team domain and storage IDs match.");
+  await warnMissingSecrets(ctx, warnings, pending);
 }
 
 /**
- * The parsed, validated deployment file. Every `validateConfig` message names a config path, so the
- * error says which file those paths live in; the original stays as its `cause`.
+ * The parsed, validated deployment file, its optional Gatekeepers checked against `catalog`. Every
+ * validation message names a config path, so the error says which file those paths live in; the
+ * original stays as its `cause`.
  */
-async function readDeployment(ctx: Context, path: string, where: string): Promise<DeploymentConfig> {
+async function readDeployment(
+  ctx: Context,
+  path: string,
+  where: string,
+  catalog: GatekeeperCatalog,
+): Promise<DeploymentConfig> {
   const config = await readJsonc<DeploymentConfig>(ctx.root, path);
   try {
-    return validateConfig(config);
+    validateConfig(config);
+    validateGatekeepers(config, catalog);
+    return config;
   } catch (error) {
     throw new Error(`${where}: ${(error as Error).message}`, { cause: error });
   }
 }
 
-/** `cf-os check` / `cf-os deploy`. */
-export async function run(args: CommandArgs, ctx: Context): Promise<number> {
+/** What `cf-os check` and `cf-os deploy` hand off, so tests can record it instead. */
+export interface DeployDeps {
+  /** Every package's build ({@link buildAll}). */
+  build(ctx: Context, config: DeploymentConfig, catalog: GatekeeperCatalog): Promise<void>;
+  /** The deploys, or with `check` their dry runs ({@link deployAll}). */
+  deploy(ctx: Context, config: DeploymentConfig, catalog: GatekeeperCatalog, check: boolean): Promise<void>;
+  /** `wrangler secret bulk`, for the secrets `init` asked for. */
+  spawn: SpawnTool;
+}
+
+function defaultDeps(): DeployDeps {
+  return { build: buildAll, deploy: deployAll, spawn: defaultSpawn() };
+}
+
+/**
+ * `cf-os check` / `cf-os deploy`. `secrets` are the values `cf-os init` asked for, passed in memory
+ * by its in-process deploy, and set once every Worker has deployed.
+ */
+export async function run(
+  args: CommandArgs,
+  ctx: Context,
+  { secrets = [] }: { secrets?: PendingSecrets[] } = {},
+  deps: DeployDeps = defaultDeps(),
+): Promise<number> {
+  let config: DeploymentConfig | number;
+  try {
+    config = await buildAndDeploy(args, ctx, secrets, deps);
+  } catch (error) {
+    for (const { gatekeeper } of secrets) {
+      ctx.out.log(`\nThe ${gatekeeper} Gatekeeper's OAuth credentials were not set, as the deploy did not finish: ` +
+        `once it is fixed, \`${secretsCommand(ctx, gatekeeper)}\` sets them.`);
+    }
+    throw error;
+  }
+  if (typeof config === "number") return config;
+  return setSecrets(ctx, deps, config.accountId, secrets);
+}
+
+/**
+ * Sets each of `pending` on its Worker, one at a time, since each may be refreshing Wrangler's
+ * single-use token (see {@link deployAll}). A failure names the `cf-os secrets` command that tries
+ * again, and the run exits 1.
+ */
+async function setSecrets(ctx: Context, deps: DeployDeps, accountId: string, pending: PendingSecrets[]): Promise<number> {
+  if (!pending.length) return 0;
+  const client = await ctx.client();
+  let failed = false;
+  for (const secrets of pending) {
+    try {
+      await uploadSecrets(ctx, { client, spawn: deps.spawn }, accountId, secrets);
+    } catch (error) {
+      failed = true;
+      ctx.out.log(`\nDeployed, but the ${secrets.gatekeeper} Gatekeeper's OAuth credentials were not set: ` +
+        withRetry(ctx, error as Error, secrets.gatekeeper));
+    }
+  }
+  return failed ? 1 : 0;
+}
+
+/**
+ * Everything up to and including the deploys: the validated deployment file once they succeed, or
+ * the exit code of an `init` run in its place that left nothing to deploy.
+ */
+async function buildAndDeploy(
+  args: CommandArgs,
+  ctx: Context,
+  secrets: PendingSecrets[],
+  deps: DeployDeps,
+): Promise<DeploymentConfig | number> {
   const check = args.command === "check";
   const root = ctx.root;
   requireSubmodule(root);
   const path = configPath(ctx);
   const where = displayPath(ctx, path);
+  const catalog = await loadCatalog(root);
   let config: DeploymentConfig;
   try {
-    config = await readDeployment(ctx, path, where);
+    config = await readDeployment(ctx, path, where, catalog);
   } catch (error) {
     // An unconfigured file, at a terminal: offer the wizard instead of the bare error, then carry on
     // with the file it wrote. Not a confirmation of anything; it only replaces a failure.
@@ -246,29 +388,33 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
     // Still placeholders (Access left for later, say): init has just listed them and the fix.
     if (placeholderPaths(parseDeployment(await readFile(path, "utf8"), where)).length) return 1;
     ctx.out.log(`\nContinuing with \`cf-os ${args.command}\`.`);
-    config = await readDeployment(ctx, path, where);
+    config = await readDeployment(ctx, path, where, catalog);
   }
   // The file's IDs, AUD tag and issuer all belong to its account, so a different one cannot simply
   // take its place: refused, as \`cf-os access\` refuses it.
   if (ctx.flags.account && ctx.flags.account.toLowerCase() !== config.accountId.toLowerCase()) {
     throw new Error(`--account ${ctx.flags.account} is not ${where}'s accountId (${config.accountId}).`);
   }
-  const generated = generateConfigs(config, await readBaseConfigs(root));
+  const generated = generateConfigs(config, await readBaseConfigs(root), catalog);
   reportAiGateway(ctx, config);
-  await checkAccount(ctx, config, where);
+  for (const warning of undeclaredVarWarnings(config.gatekeepers ?? {})) ctx.out.log(`\n${warning}`);
+  await checkAccount(ctx, config, where, catalog, secrets);
 
-  const generatedPaths = Object.fromEntries(Object.entries(PACKAGE_DIRS)
-    .map(([key, dir]) => [key, join(root, dir, GENERATED_NAME)])) as Record<PackageKey, string>;
+  const generatedPath = (id: WorkerId) => join(root, workerDir(id, catalog), GENERATED_NAME);
+  // Every package's, not only those generated this time: a Worker turned off since (the Error
+  // Reporter, the custom Gatekeeper) may still hold one from a run that never got to clean up.
+  const cleanup = [...Object.keys(PACKAGE_DIRS) as PackageKey[], ...gatekeeperSlugs(config).map(gatekeeperWorkerId)]
+    .map(generatedPath);
   try {
-    for (const [key, generatedConfig] of Object.entries(generated)) {
-      await writeFile(generatedPaths[key as PackageKey], `${JSON.stringify(generatedConfig, null, 2)}\n`);
+    for (const [id, generatedConfig] of generatedOutputs(generated)) {
+      await writeFile(generatedPath(id), `${JSON.stringify(generatedConfig, null, 2)}\n`);
     }
     if (check) pnpm(root, ["test"]);
-    await buildAll(ctx, config);
-    await deployAll(ctx, config, check);
+    await deps.build(ctx, config, catalog);
+    await deps.deploy(ctx, config, catalog, check);
   } finally {
     // Only once every command has settled: mapConcurrent awaits all it started, failed or not.
-    await Promise.all(Object.values(generatedPaths).map((generatedPath) => rm(generatedPath, { force: true })));
+    await Promise.all(cleanup.map((file) => rm(file, { force: true })));
   }
-  return 0;
+  return config;
 }

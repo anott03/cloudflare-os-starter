@@ -8,9 +8,11 @@
 // nothing: a create is only validated, its request printed on stdout, and the file is not written.
 
 import { readFile } from "node:fs/promises";
+import { cachedReads, prefetch } from "../cached-reads.ts";
 import { configPath, displayPath, type CommandArgs, type Context } from "../context.ts";
 import { accessTarget, setupAccess } from "../core/access.ts";
 import { parseDeployment, updateDeployment } from "../deployment-file.ts";
+import { waitOn } from "../prompt.ts";
 
 /** `cf-os access`. */
 export async function run(args: CommandArgs, ctx: Context): Promise<number> {
@@ -22,7 +24,15 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
     throw new Error(`--account ${ctx.flags.account} is not ${where}'s accountId (${target.accountId}).`);
   }
 
-  const result = await setupAccess(await ctx.client(), target, { dryRun });
+  // The applications are listed while the organization is read, rather than once it is in: the
+  // lookup takes both from the cache. The organization first, so that a sign-in whose first `cf` call
+  // goes alone (cf-client.ts) still reads it first, which can end the run before the applications matter.
+  const { quiet: client } = cachedReads(await ctx.client());
+  prefetch(client.getOrganization(target.accountId));
+  prefetch(client.listAccessApps(target.accountId));
+  const result = await waitOn(ctx.prompter,
+    dryRun ? "Looking up Access in the account" : "Finding or creating the Access application",
+    () => setupAccess(client, target, { dryRun }));
   if (result.kind !== "reused" && result.wildcard) {
     // Once the dedicated one exists, Access applies it ahead of the wildcard: using the wildcard then
     // means deleting it first.

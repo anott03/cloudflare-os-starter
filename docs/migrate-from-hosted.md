@@ -52,12 +52,13 @@ pnpm cf-os check
 the Workers, storage, AI Gateway and Access values in sections 3–7 under the hosted flow's names. It
 prints a found/missing table, then asks for the values no lookup can supply, with defaults:
 `access.admins` (the email `cf` is signed in as), a Web Search Worker name if the instance has none,
-names for the two Workers the hosted flow does not have (`N-gk-custom`, `N-errors`), the model
-providers to advertise, and the example custom Gatekeeper's name and message. It writes
+which Gatekeepers to deploy beyond Context, Scheduler and Web Search (it preselects those the
+instance runs), names for the two Workers the hosted flow does not have (`N-gk-custom`, `N-errors`),
+the model providers to advertise, and the example custom Gatekeeper's name and message. It writes
 everything into `deployment.jsonc`, leaving the comments alone; `--out <path>` writes a copy
 instead. It never guesses: anything it did not find stays as it was in the file and is listed as
-missing. It also lists any other `N-gk-*` Worker, a Gatekeeper the wizard installed that this
-starter will not bind (section 8). It ends by listing anything still a placeholder, or, when
+missing. It also lists any other `N-gk-*` Worker, with the reason (section 8). It ends by
+listing anything still a placeholder, or, when
 nothing is, by offering to deploy. Say no the first time: a takeover deploys over your data, so
 review the diff and run `pnpm cf-os check` first, then `pnpm cf-os deploy`. Choosing **A new deployment** with the instance's name switches
 to the takeover rather than overwriting it.
@@ -72,8 +73,10 @@ pnpm cf-os import N --account <account-id> --out deployment.jsonc   # writes the
 It only reads from the account. With no `--account` and no `accountId` in the file, it asks which
 of the accounts `cf` can reach to search, and with no `N`, which instance; outside a terminal, or
 in CI, it lists them and stops instead. Without `--out` it prints the values as JSON on stdout (the
-report goes to stderr) and ends with the full command to re-run with `--out`. It leaves
-`access.admins`, the two new Worker names and the custom Gatekeeper's text for you to fill in.
+report goes to stderr) and ends with the full command to re-run with `--out`. The values include
+`gatekeepers.<slug>.name` for each optional Gatekeeper it found. It leaves `access.admins`, the two
+new Worker names and the custom Gatekeeper's text for you to fill in, or
+`customGatekeeper.enabled: false` to deploy no custom Gatekeeper.
 
 `pnpm cf-os check` then confirms, against the account, the AUD tag, the team domain, and every KV
 namespace, R2 bucket and AI Gateway the file now names. That catches a wrong value before anything
@@ -90,6 +93,7 @@ the manual lookup for anything reported missing.
 | `N-gk-context` | Context collections | `workers.context.name` |
 | `N-gk-scheduler` | Scheduled and recurring work | `workers.scheduler.name` |
 | `N-gk-websearch` | Nothing; stateless web search | `workers.websearch.name` |
+| `N-gk-<slug>`, such as `N-gk-github` | Users' connections to that service | `gatekeepers.<slug>.name` |
 | `N` | The public URL | `workers.router.name` |
 
 The Gatekeeper suffixes are the hosted flow's choice, not the starter's; the naming table in
@@ -99,7 +103,15 @@ instance deployed before Web Search shipped has no `N-gk-websearch`. Name it you
 deploy creates it. Its users finished onboarding before Web Search existed, so none of them has it
 until it is set to enabled in `/admin` or they turn it on from the Gatekeepers page. The starter also deploys two
 Workers the hosted flow does not: the example custom Gatekeeper and the Error Reporter. Give those
-new names; nothing depends on them yet.
+new names, or set `customGatekeeper.enabled: false` to deploy no custom Gatekeeper; nothing
+depends on them yet.
+
+Each optional Gatekeeper the wizard installed that the starter can deploy goes in `gatekeepers`
+under its `N-gk-<slug>` name, which the lookup writes. A deploy keeps its OAuth secrets but replaces
+its plain vars, so copy any set on the hosted Worker (`GITLAB_URL`, `MCP_PORTAL_URL`) into
+`gatekeepers.<slug>.vars`. Its OAuth redirect URI follows the public origin, so a new hostname has
+to be added to each provider's OAuth app. See
+[Optional Gatekeepers](customization.md#optional-gatekeepers).
 
 ```jsonc
 "workers": {
@@ -111,6 +123,9 @@ new names; nothing depends on them yet.
   "websearch": { "name": "N-gk-websearch" },
   "customGatekeeper": { "name": "N-gk-custom" },
   "errorReporter": { "name": "N-errors" }
+},
+"gatekeepers": {
+  "github": { "name": "N-gk-github" }
 }
 ```
 
@@ -249,7 +264,8 @@ and reuse this same application, so it adds nothing, and the lookup already wrot
 
 The application already covers the hostname the router answers on, so keeping the URL keeps Access
 working untouched. Only if you are moving the instance to a new hostname do you have to extend the
-application to cover it — before deploying, and along with `context.sharingDomain` from section 4.
+application to cover it — before deploying, along with `context.sharingDomain` from section 4 and
+each optional Gatekeeper's redirect URI from section 3.
 
 ## 8. What you lose
 
@@ -257,13 +273,17 @@ application to cover it — before deploying, and along with `context.sharingDom
   deployment" link. The starter does not set it, so the link disappears. This is not a regression to
   work around: the hosted wizard refuses to redeploy over its own workers once you have taken them
   over, which is the whole reason to eject.
-- **Gatekeepers you installed through the wizard.** The starter deploys the three ambient ones,
-  Context, Scheduler and Web Search, plus whatever is in `packages/`. The lookup lists the others it
-  finds. Any *other* Gatekeeper the wizard
-  installed keeps running as its own Worker, but the generated configs no longer carry its
-  `GATEKEEPER_*` service binding, so it disappears from the app. Port it into `packages/` and add
-  the binding in `packages/cf-os/src/core/deployment.ts` — to the Workshop for its vendor RPC, and to the router if it
-  serves HTTP under `/gatekeeper/<name>` — or delete the orphaned Worker.
+- **Some Gatekeepers you installed through the wizard.** The optional Gatekeepers the starter can
+  deploy carry over (section 3). Two kinds do not, and the lookup lists each with the reason:
+  - a **repeat install**, such as `N-gk-google2` beside `N-gk-google`: the starter deploys one
+    Worker per Gatekeeper package;
+  - an **unknown** one: a Gatekeeper the pinned submodule does not have, or one the starter cannot
+    deploy (upstream marks Email not installable, for one).
+
+  Either keeps running unbound, and disappears from the app with its users' connections; so does
+  one you leave out at the Gatekeeper question. Delete an orphaned Worker with
+  `CLOUDFLARE_ACCOUNT_ID=<account-id> pnpm exec wrangler delete --name <worker>` once nobody needs
+  it.
 
 ## 9. Verify
 
@@ -277,6 +297,8 @@ Beyond the [standard checks](../README.md#4-verify-the-deployment):
 6. Send one message to confirm inference actually routes.
 7. Turn Web Search on for your user (section 3), then ask an agent to search the web, and confirm
    results come back.
+8. For each optional Gatekeeper carried over, confirm a connection made before the migration still
+   works.
 
 If the model picker is empty or the app looks freshly installed, **stop before writing anything**.
 Both are binding problems, not data loss: compare the deployed Worker names and resource IDs against
