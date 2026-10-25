@@ -1,5 +1,7 @@
 node_modules/
 packages/*/dist/
+packages/*/*.tgz
 packages/*/.wrangler/
 packages/*/wrangler.prod.jsonc
 deployment.local.jsonc
+.cf-os/

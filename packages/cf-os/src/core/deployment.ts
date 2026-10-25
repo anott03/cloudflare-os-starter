@@ -1,11 +1,9 @@
-import { existsSync } from "node:fs";
-import { readFile, rm, writeFile } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join, relative, resolve } from "node:path";
-import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
-import { pnpmCommand } from "../cloudflare-os/scripts/pnpm-command.ts";
-import { resolveBinEntry } from "../cloudflare-os/scripts/bin-entry.ts";
+// The deployment as pure data: `validateConfig` checks a parsed `deployment.jsonc`, then
+// `generateConfigs` derives each Worker's `wrangler.prod.jsonc` from its upstream base config, and
+// `buildCommands`/`deployWaves` say what a check or deploy runs and what of it can run together. No
+// I/O: the base configs come in parsed and the commands go out as arguments, for
+// `commands/deploy.ts` to read and run.
+
 import { AI_GATEWAY_PROVIDERS } from "./deployment-config.ts";
 import type {
   BaseConfigs,
@@ -15,21 +13,92 @@ import type {
   ProdWranglerConfig,
   RouterRoute,
 } from "./deployment-config.ts";
+import type { CatalogGatekeeper, GatekeeperCatalog } from "./gatekeepers.ts";
+import { BUILT_IN_GATEKEEPER_SLUGS } from "./naming.ts";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-// One deployment per checkout; use separate worktrees for concurrent deploys.
-const generatedName = "wrangler.prod.jsonc";
-const packageDirs = {
+/**
+ * Where each Worker's package lives, relative to the project root, keyed as `deployment.jsonc` keys
+ * the Workers. Its base `wrangler.jsonc` is read from there, and its generated config written beside
+ * it.
+ */
+export const PACKAGE_DIRS = {
   router: "cloudflare-os/packages/router",
   workshop: "cloudflare-os/packages/workshop-backend",
   context: "cloudflare-os/packages/gatekeeper-context",
   scheduler: "cloudflare-os/packages/gatekeeper-scheduler",
+  websearch: "cloudflare-os/packages/gatekeeper-websearch",
   customGatekeeper: "packages/custom-gatekeeper",
   errorReporter: "packages/error-reporter",
 } as const;
-const generatedPaths = Object.fromEntries(
-  Object.entries(packageDirs).map(([name, dir]) => [name, join(root, dir, generatedName)]),
-) as Record<keyof typeof packageDirs, string>;
+
+/** A key of {@link PACKAGE_DIRS}: one of the starter's own Workers. */
+export type PackageKey = keyof typeof PACKAGE_DIRS;
+
+/**
+ * One deployable Worker: a {@link PACKAGE_DIRS} key, or `gatekeepers.<slug>` for an optional
+ * Gatekeeper, whose package the catalog locates.
+ */
+export type WorkerId = PackageKey | `gatekeepers.${string}`;
+
+/** The {@link WorkerId} of optional Gatekeeper `slug`. */
+export function gatekeeperWorkerId(slug: string): WorkerId {
+  return `gatekeepers.${slug}`;
+}
+
+/** The slug of an optional Gatekeeper's {@link WorkerId}, or undefined for the starter's own. */
+function slugOf(id: WorkerId): string | undefined {
+  return id.startsWith("gatekeepers.") ? id.slice("gatekeepers.".length) : undefined;
+}
+
+/** The catalog entry for `slug`. `validateGatekeepers` has already checked there is one. */
+function offeredGatekeeper(catalog: GatekeeperCatalog, slug: string): CatalogGatekeeper {
+  const entry = catalog.offered.find((gatekeeper) => gatekeeper.slug === slug);
+  if (!entry) throw new Error(`gatekeepers.${slug} is not in the Gatekeeper catalog.`);
+  return entry;
+}
+
+/** Where Worker `id`'s package lives, relative to the project root. */
+export function workerDir(id: WorkerId, catalog: GatekeeperCatalog): string {
+  const slug = slugOf(id);
+  return slug === undefined ? PACKAGE_DIRS[id as PackageKey] : offeredGatekeeper(catalog, slug).packageDir;
+}
+
+/** Worker `id`'s name in `config`. */
+export function workerName(config: DeploymentConfig, id: WorkerId): string {
+  const slug = slugOf(id);
+  return slug === undefined ? config.workers[id as PackageKey]!.name : config.gatekeepers![slug].name;
+}
+
+/** Every generated config, by the Worker it is for. */
+export function generatedOutputs(generated: GeneratedConfigs): [WorkerId, ProdWranglerConfig][] {
+  const { gatekeepers, ...own } = generated;
+  return [
+    ...(Object.entries(own) as [PackageKey, ProdWranglerConfig | undefined][])
+      .filter((entry): entry is [PackageKey, ProdWranglerConfig] => entry[1] !== undefined),
+    ...Object.entries(gatekeepers).map(([slug, config]) => [gatekeeperWorkerId(slug), config] as [WorkerId, ProdWranglerConfig]),
+  ];
+}
+
+/** Whether the example custom Gatekeeper is deployed. Absent `customGatekeeper.enabled` means it is. */
+export function customGatekeeperEnabled(config: DeploymentConfig): boolean {
+  return config.customGatekeeper?.enabled !== false;
+}
+
+/** The slugs of the optional Gatekeepers `config` selects. */
+export function gatekeeperSlugs(config: DeploymentConfig): string[] {
+  return Object.keys(config.gatekeepers ?? {});
+}
+
+/** The service binding name both the Workshop and the router reach Gatekeeper `slug` by. */
+function gatekeeperBinding(slug: string): string {
+  return `GATEKEEPER_${slug.toUpperCase()}`;
+}
+
+/**
+ * The generated config's file name, beside each base `wrangler.jsonc`. One deployment per checkout;
+ * use separate worktrees for concurrent deploys.
+ */
+export const GENERATED_NAME = "wrangler.prod.jsonc";
 const defaultContextArtifactsNamespace = "gatekeeper-context-collections";
 const accountIdPattern = /^[a-f\d]{32}$/i;
 
@@ -39,14 +108,12 @@ const requiredPaths = [
   "workers.workshop.name",
   "workers.context.name",
   "workers.scheduler.name",
-  "workers.customGatekeeper.name",
+  "workers.websearch.name",
   "access.issuer",
   "access.audience",
   "access.admins",
   "aiGateway.enabled",
   "errorReporting.enabled",
-  "customGatekeeper.name",
-  "customGatekeeper.message",
   "observability.enabled",
   "observability.headSamplingRate",
   "observability.logs.invocationLogs",
@@ -60,6 +127,20 @@ const aiGatewayPaths = [
   "aiGateway.name",
   "aiGateway.providers",
 ];
+
+const customGatekeeperPaths = [
+  "workers.customGatekeeper.name",
+  "customGatekeeper.name",
+  "customGatekeeper.message",
+];
+
+/**
+ * An install slug, mirroring `SLUG_RE` and `MAX_SLUG_LEN` in
+ * cloudflare-os/scripts/release/manifest-lib.ts: the one charset that survives the round trip
+ * through a `GATEKEEPER_<SLUG>` binding name and back to a route.
+ */
+const slugPattern = /^[a-z][a-z0-9]*$/;
+const maxSlugLength = 20;
 
 const errorReportingPaths = [
   "workers.errorReporter.name",
@@ -159,9 +240,18 @@ function validatePublicBaseUrl(config: DeploymentConfig, route: RouterRoute): vo
   }
 }
 
+/** The file still holds a template `<PLACEHOLDER>`: it has not been configured yet. */
+export class PlaceholderError extends Error {}
+
+/**
+ * Checks `config` against everything a deploy relies on, throwing the first problem with the config
+ * path it concerns. A file that still holds template placeholders throws {@link PlaceholderError}.
+ */
 export function validateConfig(config: DeploymentConfig): DeploymentConfig {
+  const customGatekeeper = customGatekeeperEnabled(config);
   const activePaths = [
     ...requiredPaths,
+    ...(customGatekeeper ? customGatekeeperPaths : []),
     ...(config.aiGateway?.enabled ? aiGatewayPaths : []),
     ...(config.errorReporting?.enabled ? errorReportingPaths : []),
   ];
@@ -189,8 +279,15 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
       errorReporting: { enabled: false },
     };
   }
+  if (!customGatekeeper) {
+    activeConfig = {
+      ...activeConfig,
+      workers: { ...activeConfig.workers, customGatekeeper: undefined },
+      customGatekeeper: { enabled: false } as DeploymentConfig["customGatekeeper"],
+    };
+  }
   const placeholder = JSON.stringify(activeConfig).match(/<[^>]+>/)?.[0];
-  if (placeholder) throw new Error(`Replace deployment placeholder ${placeholder}.`);
+  if (placeholder) throw new PlaceholderError(`Replace deployment placeholder ${placeholder}.`);
 
   const stringPaths = activePaths.filter((path) => ![
     "access.admins",
@@ -212,12 +309,22 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   if (!accountIdPattern.test(config.accountId)) {
     throw new Error("Cloudflare account IDs must be 32 hexadecimal characters.");
   }
-  const workerNames = Object.entries(config.workers)
-    .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
-    .map(([, worker]) => worker.name);
-  if (new Set(workerNames).size !== workerNames.length) {
+  if (config.customGatekeeper.enabled !== undefined && typeof config.customGatekeeper.enabled !== "boolean") {
+    throw new Error("customGatekeeper.enabled must be a boolean.");
+  }
+  validateGatekeeperEntries(config);
+  const workerNames = [
+    ...Object.entries(config.workers)
+      .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
+      .filter(([key]) => key !== "customGatekeeper" || customGatekeeper)
+      .map(([, worker]) => worker!.name),
+    ...Object.values(config.gatekeepers ?? {}).map((entry) => entry.name),
+  ];
+  const duplicate = workerNames.find((name, index) => workerNames.indexOf(name) !== index);
+  if (duplicate !== undefined) {
     throw new Error(
-      "Router, Workshop, Context, Scheduler, and custom Gatekeeper names must be unique.");
+      "Router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, Error Reporter and " +
+      `optional Gatekeeper names must be unique: ${duplicate} is used twice.`);
   }
   if (!workerNames.every((name) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))) {
     throw new Error("Worker names must use lowercase letters, numbers, and hyphens.");
@@ -310,10 +417,94 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
 }
 
 /**
+ * The shape of `gatekeepers`, which needs no catalog: slugs, names and vars. Whether each slug is
+ * one upstream offers is {@link validateGatekeepers}'s question.
+ */
+function validateGatekeeperEntries(config: DeploymentConfig): void {
+  const gatekeepers: unknown = config.gatekeepers;
+  if (gatekeepers === undefined) return;
+  if (!gatekeepers || typeof gatekeepers !== "object" || Array.isArray(gatekeepers)) {
+    throw new Error("gatekeepers must be an object keyed by Gatekeeper slug.");
+  }
+  for (const [slug, entry] of Object.entries(gatekeepers as Record<string, unknown>)) {
+    if (!slugPattern.test(slug) || slug.length > maxSlugLength) {
+      throw new Error(
+        `gatekeepers.${slug}: a Gatekeeper slug is 1-${maxSlugLength} lowercase letters and digits, ` +
+        "starting with a letter. It becomes a GATEKEEPER_<SLUG> binding and a /gatekeeper/<slug> route.");
+    }
+    if (BUILT_IN_GATEKEEPER_SLUGS.includes(slug)) {
+      throw new Error(
+        `gatekeepers.${slug}: ${slug} is one of the Gatekeepers the starter deploys itself; its ` +
+        "Worker is named under workers.");
+    }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`gatekeepers.${slug} must be an object with a name.`);
+    }
+    const unknown = Object.keys(entry).filter((key) => key !== "name" && key !== "vars");
+    if (unknown.length) {
+      throw new Error(`gatekeepers.${slug}: only name and vars are allowed, not ${unknown.join(", ")}.`);
+    }
+    const { name, vars } = entry as { name?: unknown; vars?: unknown };
+    if (typeof name !== "string" || !name) {
+      throw new Error(`gatekeepers.${slug}.name must be a Worker name.`);
+    }
+    if (vars === undefined) continue;
+    if (!vars || typeof vars !== "object" || Array.isArray(vars)) {
+      throw new Error(`gatekeepers.${slug}.vars must be an object of strings.`);
+    }
+    for (const [key, value] of Object.entries(vars)) {
+      if (key === "BASE_URL") {
+        throw new Error(
+          `gatekeepers.${slug}.vars.BASE_URL: the deploy sets it, to <public origin>/gatekeeper/${slug}. ` +
+          "Remove it.");
+      }
+      if (typeof value !== "string") {
+        throw new Error(`gatekeepers.${slug}.vars.${key} must be a string.`);
+      }
+    }
+  }
+}
+
+/**
+ * Checks `config.gatekeepers` against the catalog of what the submodule offers, throwing the first
+ * problem with the config path it concerns. Separate from {@link validateConfig} because the
+ * catalog comes from the disk; a deployment that selects none never needs one.
+ */
+export function validateGatekeepers(config: DeploymentConfig, catalog: GatekeeperCatalog): void {
+  const entries = Object.entries(config.gatekeepers ?? {});
+  if (!entries.length) return;
+  if (catalog.unavailable) {
+    throw new Error(`gatekeepers: the Gatekeeper catalog could not be read, so none can be deployed: ${catalog.unavailable}`);
+  }
+  for (const [slug, entry] of entries) {
+    const offered = catalog.offered.find((gatekeeper) => gatekeeper.slug === slug);
+    if (!offered) {
+      const excluded = catalog.excluded.find((gatekeeper) => gatekeeper.slug === slug);
+      throw new Error(excluded
+        ? `gatekeepers.${slug}: the starter cannot deploy ${excluded.package}: ${excluded.reason}.`
+        : `gatekeepers.${slug}: upstream has no such Gatekeeper. Available: ` +
+          `${catalog.offered.map((gatekeeper) => gatekeeper.slug).join(", ") || "none"}.`);
+    }
+    for (const key of Object.keys(entry.vars ?? {})) {
+      if (offered.secrets.some((input) => input.name === key)) {
+        throw new Error(
+          `gatekeepers.${slug}.vars.${key} is a secret, and this file is committed. Remove it, then ` +
+          `set it with \`CLOUDFLARE_ACCOUNT_ID=${config.accountId} pnpm exec wrangler secret put ${key} --name ${entry.name}\`.`);
+      }
+    }
+    for (const input of offered.vars) {
+      if (entry.vars?.[input.name] === undefined) {
+        throw new Error(`Missing required deployment value: gatekeepers.${slug}.vars.${input.name} (${input.label}).`);
+      }
+    }
+  }
+}
+
+/**
  * How the Workshop reaches AI Gateway, derived rather than configured.
  *
  * The Worker cannot discover its own account at runtime, so it cannot tell whether the gateway it
- * is pointed at is one its `WORKERS_AI` binding can reach. This script can: it holds both account
+ * is pointed at is one its `WORKERS_AI` binding can reach. The deploy can: it holds both account
  * IDs. Everything below follows from comparing them.
  */
 export interface AiGatewayPlan {
@@ -367,10 +558,14 @@ function validateExtraGatekeepers(config: DeploymentConfig): void {
   const pattern = /^GATEKEEPER_[A-Z0-9_]+$/;
   // Bound by generateConfigs from the deployment's own Workers; EMAIL is the Router's special-cased
   // Email Routing shape.
-  const reserved = ["GATEKEEPER_CONTEXT", "GATEKEEPER_SCHEDULER", "GATEKEEPER_CUSTOM", "GATEKEEPER_EMAIL"];
-  const ownedNames = Object.values(config.workers)
-    .filter(Boolean)
-    .map((worker) => worker!.name);
+  const reserved = [
+    "GATEKEEPER_CONTEXT", "GATEKEEPER_SCHEDULER", "GATEKEEPER_WEBSEARCH", "GATEKEEPER_CUSTOM",
+    "GATEKEEPER_EMAIL", ...gatekeeperSlugs(config).map(gatekeeperBinding),
+  ];
+  const ownedNames = [
+    ...Object.values(config.workers).filter(Boolean).map((worker) => worker!.name),
+    ...Object.values(config.gatekeepers ?? {}).map((entry) => entry.name),
+  ];
   const seen = new Set<string>();
   for (const extra of config.extraGatekeepers ?? []) {
     if (!pattern.test(extra.binding)) {
@@ -403,7 +598,7 @@ function validateExtraGatekeepers(config: DeploymentConfig): void {
  * The deploy-time half of `AiGatewayConfig`'s constructor checks
  * (cloudflare-os/packages/workshop-backend/src/ai-gateway.ts), mirroring `resolveAiGateway()` in
  * cloudflare-os/scripts/preview/staging-config.ts. A configuration the backend would reject belongs
- * in a failed `pnpm check`, not in somebody's first chat.
+ * in a failed `cf-os check`, not in somebody's first chat.
  */
 function validateAiGateway(config: DeploymentConfig): void {
   if (config.aiGateway.workersAi !== undefined) {
@@ -452,7 +647,7 @@ function setCommon(
   delete config.routes;
   if (route.customDomain) Object.assign(config, routeConfig(route));
   // The router is the Access-protected origin, and a preview URL is an unauthenticated path around
-  // it. Off on every Worker: the five behind the router have no business being publicly reachable
+  // it. Off on every Worker: those behind the router have no business being publicly reachable
   // either.
   config.preview_urls = false;
   config.observability = {
@@ -471,17 +666,30 @@ function setCommon(
   };
 }
 
-export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): GeneratedConfigs {
+/**
+ * Every Worker's `wrangler.prod.jsonc`, derived from its base config, an optional Gatekeeper's
+ * from its catalog entry. Validates `config` first.
+ */
+export function generateConfigs(
+  config: DeploymentConfig,
+  bases: BaseConfigs,
+  catalog: GatekeeperCatalog,
+): GeneratedConfigs {
   validateConfig(config);
+  validateGatekeepers(config, catalog);
   const router = structuredClone(bases.router);
   const workshop = structuredClone(bases.workshop);
   const context = structuredClone(bases.context);
   const scheduler = structuredClone(bases.scheduler);
-  const customGatekeeper = structuredClone(bases.customGatekeeper);
+  const websearch = structuredClone(bases.websearch);
+  const customGatekeeper = customGatekeeperEnabled(config)
+    ? structuredClone(bases.customGatekeeper)
+    : undefined;
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
     : undefined;
   const origin = publicOrigin(config);
+  const optional = Object.entries(config.gatekeepers ?? {});
 
   setCommon(router, config, config.workers.router.name, config.workers.router.route);
   router.services = [
@@ -490,7 +698,11 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     // vendor-RPC bindings. The binding name is what picks the /gatekeeper/<name> path.
     { binding: "GATEKEEPER_CONTEXT", service: config.workers.context.name },
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
-    { binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper.name },
+    { binding: "GATEKEEPER_WEBSEARCH", service: config.workers.websearch.name },
+    ...(customGatekeeper
+      ? [{ binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper!.name }]
+      : []),
+    ...optional.map(([slug, entry]) => ({ binding: gatekeeperBinding(slug), service: entry.name })),
     // Hand-deployed Gatekeepers: plain HTTP bindings. The Router discovers them by scanning
     // GATEKEEPER_* names and serves each at /gatekeeper/<suffix>.
     ...(config.extraGatekeepers ?? []).map(({ binding, service }) => ({ binding, service })),
@@ -554,11 +766,25 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       service: config.workers.scheduler.name,
       entrypoint: "GatekeeperVendor",
     },
+    // No props either: searches are scoped to nobody, and the only state is the per-workspace
+    // `WebSearchGatekeeper` facet, reached through `ctx.exports`.
     {
-      binding: "GATEKEEPER_CUSTOM",
-      service: config.workers.customGatekeeper.name,
+      binding: "GATEKEEPER_WEBSEARCH",
+      service: config.workers.websearch.name,
       entrypoint: "GatekeeperVendor",
     },
+    ...(customGatekeeper ? [{
+      binding: "GATEKEEPER_CUSTOM",
+      service: config.workers.customGatekeeper!.name,
+      entrypoint: "GatekeeperVendor",
+    }] : []),
+    // No props: upstream's deploy service passes none to any Gatekeeper but Context
+    // (`propsByPackage` in cloudflare-os/scripts/release/manifest-lib.ts).
+    ...optional.map(([slug, entry]) => ({
+      binding: gatekeeperBinding(slug),
+      service: entry.name,
+      entrypoint: "GatekeeperVendor",
+    })),
     // Hand-deployed Gatekeepers ride the same vendor-RPC shape as the built-in ones.
     ...(config.extraGatekeepers ?? []).map(({ binding, service }) => ({
       binding,
@@ -598,19 +824,50 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   // here without adding a configuration surface for it.
   setCommon(scheduler, config, config.workers.scheduler.name);
 
-  setCommon(customGatekeeper, config, config.workers.customGatekeeper.name);
-  customGatekeeper.vars = {
-    CUSTOM_NAME: config.customGatekeeper.name,
-    CUSTOM_MESSAGE: config.customGatekeeper.message,
-  };
+  // Its base config's `ai` binding, `.txt` rule and Durable Object migrations carry over as they
+  // are. It searches through the gateway `CF_AI_GATEWAY` names (gatekeeper-websearch/src/search.ts),
+  // the Workshop's, as upstream's deploy service sets it, so its searches share that gateway's keys,
+  // limits and logs. Unset, it is `default`, which Cloudflare creates on first use: so with the
+  // catalog off, and for a gateway in another account, which the `AI` binding cannot reach.
+  setCommon(websearch, config, config.workers.websearch.name);
+  if (gateway && !gateway.crossAccount) websearch.vars = { CF_AI_GATEWAY: config.aiGateway.name };
+
+  if (customGatekeeper) {
+    setCommon(customGatekeeper, config, config.workers.customGatekeeper!.name);
+    customGatekeeper.vars = {
+      CUSTOM_NAME: config.customGatekeeper.name,
+      CUSTOM_MESSAGE: config.customGatekeeper.message,
+    };
+  }
 
   if (errorReporter) {
     setCommon(errorReporter, config, config.workers.errorReporter!.name);
   }
 
+  // Base config as upstream ships it -- migrations, rules, build command -- plus the common block,
+  // the operator's vars, and `BASE_URL`, which upstream's optional Gatekeepers build their OAuth
+  // redirect and every absolute link from, and throw without. The value is the one the hosted
+  // release templates (`buildWorkerEntry` in cloudflare-os/scripts/release/manifest-lib.ts). One
+  // with a Workers AI binding of its own (Google, for Drive PDFs) gets the Workshop's gateway as its
+  // `CF_AI_GATEWAY`, as Web Search does; unset, it calls Workers AI through no gateway.
+  const gatekeepers: Record<string, ProdWranglerConfig> = {};
+  for (const [slug, entry] of optional) {
+    const generated = structuredClone(offeredGatekeeper(catalog, slug).config);
+    setCommon(generated, config, entry.name);
+    generated.vars = {
+      ...generated.vars,
+      ...(generated.ai && gateway && !gateway.crossAccount ? { CF_AI_GATEWAY: config.aiGateway.name } : {}),
+      ...entry.vars,
+      BASE_URL: `${origin}/gatekeeper/${slug}`,
+    };
+    gatekeepers[slug] = generated;
+  }
+
   return {
-    router, workshop, context, scheduler, customGatekeeper,
+    router, workshop, context, scheduler, websearch,
+    ...(customGatekeeper && { customGatekeeper }),
     ...(errorReporter && { errorReporter }),
+    gatekeepers,
   };
 }
 
@@ -628,7 +885,9 @@ function ownBuild(pkg: string, task = "build"): string[] {
 }
 
 /**
- * The build steps `pnpm check` and `pnpm deploy` run, in order, from the repository root.
+ * The build steps `cf-os check` and `cf-os deploy` run, from the project root, as chains: the steps
+ * inside one chain run in order, and the chains are independent of each other, so they can run
+ * concurrently.
  *
  * Every one goes through `vp run` rather than `pnpm --filter <pkg> build`. Two of the three
  * submodule targets have no `build` *script* at all any more -- they have a Vite+ *task*, which
@@ -641,171 +900,65 @@ function ownBuild(pkg: string, task = "build"): string[] {
  * `vp` run only declared patterns survive, and an undeclared variable is dropped from the command
  * and from the fingerprint both.
  *
- * The ordering matters at the end: the frontend has to build before the router deploy picks up
- * `../workshop-frontend/dist` as its assets.
+ * The frontend and the router are separate chains even though the router serves
+ * `../workshop-frontend/dist`: it is the router's *deploy* that reads those assets, not its build,
+ * and every build finishes before anything deploys.
  */
-export function buildCommands(config: DeploymentConfig): BuildCommand[] {
+export function buildCommands(config: DeploymentConfig, catalog: GatekeeperCatalog): BuildCommand[][] {
   return [
     // `build:app` first, and separately. `gatekeeper-context`'s `build` is a package.json script
     // that spawns `vp run --cache build:app` itself, and the outer `--no-cache` does not reach a
     // nested invocation carrying its own flag -- measured: the configurator app replayed from
     // cache. Rebuilding it here from source is what upstream's own `deploy` script does; the
     // `build` step below then type-checks and replays the bytes this step just wrote.
-    { args: submoduleBuild("@gadgets/gatekeeper-context", "build:app") },
-    { args: submoduleBuild("@gadgets/gatekeeper-context") },
+    [
+      { args: submoduleBuild("@gadgets/gatekeeper-context", "build:app") },
+      { args: submoduleBuild("@gadgets/gatekeeper-context") },
+    ],
     // The Scheduler's `build` nests the same cached `vp run build:app`, so it needs the same pair.
-    { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
-    { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
-    { args: ownBuild("custom-gatekeeper") },
-    ...(config.errorReporting.enabled ? [{ args: ownBuild("error-reporter") }] : []),
+    [
+      { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
+      { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
+    ],
+    // A type-check only: wrangler's own build command runs capnweb-validate at deploy time.
+    [{ args: submoduleBuild("@gadgets/gatekeeper-websearch") }],
+    ...(customGatekeeperEnabled(config) ? [[{ args: ownBuild("custom-gatekeeper") }]] : []),
+    ...(config.errorReporting.enabled ? [[{ args: ownBuild("error-reporter") }]] : []),
+    // One step each. Every optional Gatekeeper's `build` task depends on `build:configurator`, the
+    // codegen (cloudflare-os/scripts/gatekeeper-configurator-vite-config.ts), and the outer
+    // `--no-cache` reaches that dependency too -- measured: both run with "cache disabled". Their
+    // wrangler `build.command` then runs capnweb-validate at deploy time, as Web Search's does.
+    ...gatekeeperSlugs(config).map((slug) => [{ args: submoduleBuild(offeredGatekeeper(catalog, slug).packageName) }]),
     // Access mode is a build-time constant in the frontend bundle (`src/useAuth.ts`), so it is set
     // here rather than inherited: a bundle built under a different value is wrong, not just stale.
-    { args: submoduleBuild("@gadgets/workshop-frontend"), env: { VITE_CF_ACCESS_MODE: "true" } },
-    { args: submoduleBuild("@gadgets/router") },
-    { args: submoduleBuild("@gadgets/workshop-backend") },
+    [{ args: submoduleBuild("@gadgets/workshop-frontend"), env: { VITE_CF_ACCESS_MODE: "true" } }],
+    [{ args: submoduleBuild("@gadgets/router") }],
+    [{ args: submoduleBuild("@gadgets/workshop-backend") }],
   ];
 }
 
-// `allowTrailingComma` because wrangler accepts them and upstream uses them: the Scheduler's base
-// config closes `build`, `migrations` and `observability` with one. Without the option every such
-// comma is a parse *error*, so the deploy refuses a file wrangler itself reads happily.
-const jsoncOptions = { allowTrailingComma: true };
-
-async function readJsonc<T>(path: string): Promise<T> {
-  const errors: ParseError[] = [];
-  const result = parse(await readFile(path, "utf8"), errors, jsoncOptions) as T;
-  if (errors.length) {
-    const where = relative(root, path) || path;
-    throw new Error(`${where}: ${printParseErrorCode(errors[0].error)} at offset ${errors[0].offset}`);
-  }
-  return result;
-}
-
-// Every validateConfig message names a config path, so say which file those paths live in.
-async function readDeployment(path: string): Promise<DeploymentConfig> {
-  const config = await readJsonc<DeploymentConfig>(path);
-  try {
-    return validateConfig(config);
-  } catch (error) {
-    throw new Error(`${relative(root, path)}: ${(error as Error).message}`, { cause: error });
-  }
-}
-
-function runCommand(
-  command: string,
-  argv: string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  label: string,
-): void {
-  const result = spawnSync(command, argv, { cwd, env, stdio: "inherit" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    const where = relative(root, cwd) || ".";
-    throw new Error(`${where}: ${label} failed. Its output is above.`);
-  }
-}
-
-// Spawned through pnpmCommand rather than as a bare "pnpm": on Windows the pnpm on PATH is a `.cmd`
-// shim Node refuses to spawn without a shell, and `shell: true` would re-split argv and break any
-// checkout path containing a space.
-function run(args: string[], cwd = root, env: NodeJS.ProcessEnv = process.env): void {
-  const [command, argv] = pnpmCommand(args, env);
-  runCommand(command, argv, cwd, env, `pnpm ${args.join(" ")}`);
-}
-
 /**
- * `wrangler deploy` for one package, spawned as `node <entry>` when the entry point behind the
- * `.bin` shim can be found. That saves the ~0.33s `pnpm exec` costs per call and sidesteps the
- * Windows `.cmd` shim entirely; when it cannot be resolved, the pnpm path is still there.
+ * The Workers in deploy waves: those inside one wave can deploy concurrently, and each wave starts
+ * only once the one before has deployed. A service binding must name a Worker that already exists
+ * -- the Workers API rejects one to a script that does not -- so the Workshop, which binds every
+ * Gatekeeper and the Error Reporter, follows all of them, and the router, which binds the Workshop
+ * and every Gatekeeper, goes last. A failure before the router leaves the previous router version
+ * serving.
  */
-function deployWorker(dir: string, extraArgs: string[]): void {
-  const cwd = join(root, dir);
-  const args = ["deploy", "--config", generatedName, ...extraArgs];
-  const entry = resolveBinEntry(cwd, "wrangler");
-  if (entry) {
-    runCommand(process.execPath, [entry, ...args], cwd, process.env, `wrangler ${args.join(" ")}`);
-  } else {
-    run(["exec", "wrangler", ...args], cwd);
-  }
+export function deployWaves(config: DeploymentConfig): WorkerId[][] {
+  return [
+    [
+      ...(config.errorReporting.enabled ? ["errorReporter" as const] : []),
+      "context", "scheduler", "websearch",
+      ...(customGatekeeperEnabled(config) ? ["customGatekeeper" as const] : []),
+      ...gatekeeperSlugs(config).map(gatekeeperWorkerId),
+    ],
+    ["workshop"],
+    ["router"],
+  ];
 }
 
-function requireSubmodule(): void {
-  if (!existsSync(join(root, "cloudflare-os/package.json"))) {
-    throw new Error("CloudflareOS submodule is not initialized. Run git submodule update --init.");
-  }
-}
-
-function build(config: DeploymentConfig): void {
-  for (const { args, env } of buildCommands(config)) {
-    run(args, root, env ? { ...process.env, ...env } : process.env);
-  }
-}
-
-// Said once, up front, rather than discovered when the first chat throws.
-function reportAiGateway(config: DeploymentConfig): void {
-  const gateway = aiGatewayPlan(config);
-  if (!gateway) {
-    console.warn(
-      "\naiGateway.enabled is false: this deployment advertises no model catalog, and each user " +
-      "supplies their own model API keys. A Workshop migrated from the hosted deploy will show an " +
-      "empty model picker -- see docs/migrate-from-hosted.md.");
-    return;
-  }
-  if (!gateway.needsToken) return;
-  // CLOUDFLARE_ACCOUNT_ID pins the account the way the deploys themselves are pinned: every
-  // generated config carries `account_id`, but `wrangler secret put` takes only `--name`
-  console.warn(
-    `\nCF_AI_GATEWAY_API_TOKEN is required by this configuration:\n` +
-    gateway.tokenReasons.map((reason) => `  - ${reason}`).join("\n") +
-    `\nInstall it before deploying:\n  CLOUDFLARE_ACCOUNT_ID=${config.accountId} ` +
-    `pnpm exec wrangler secret put CF_AI_GATEWAY_API_TOKEN ` +
-    `--name ${config.workers.workshop.name}\n`);
-}
-
-async function main(): Promise<void> {
-  requireSubmodule();
-  const config = await readDeployment(join(root, "deployment.jsonc"));
-  const generated = generateConfigs(config, {
-    router: await readJsonc(join(root, packageDirs.router, "wrangler.jsonc")),
-    workshop: await readJsonc(join(root, packageDirs.workshop, "wrangler.jsonc")),
-    context: await readJsonc(join(root, packageDirs.context, "wrangler.jsonc")),
-    scheduler: await readJsonc(join(root, packageDirs.scheduler, "wrangler.jsonc")),
-    customGatekeeper: await readJsonc(join(root, packageDirs.customGatekeeper, "wrangler.jsonc")),
-    errorReporter: await readJsonc(join(root, packageDirs.errorReporter, "wrangler.jsonc")),
-  });
-  reportAiGateway(config);
-
-  try {
-    for (const [name, generatedConfig] of Object.entries(generated)) {
-      await writeFile(
-        generatedPaths[name as keyof typeof generatedPaths],
-        JSON.stringify(generatedConfig, null, 2) + "\n");
-    }
-    const check = process.argv.includes("--check");
-    if (check) run(["test"]);
-    build(config);
-    const deployArgs = check ? ["--dry-run"] : [];
-    if (config.errorReporting.enabled) {
-      deployWorker(packageDirs.errorReporter, deployArgs);
-    }
-    deployWorker(packageDirs.context, deployArgs);
-    deployWorker(packageDirs.scheduler, deployArgs);
-    deployWorker(packageDirs.customGatekeeper, deployArgs);
-    deployWorker(packageDirs.workshop, deployArgs);
-    // Last: it binds every one of the above.
-    deployWorker(packageDirs.router, deployArgs);
-  } finally {
-    await Promise.all(Object.values(generatedPaths).map((path) => rm(path, { force: true })));
-  }
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try {
-    await main();
-  } catch (error) {
-    // One line, no stack: every failure here is a config or subprocess problem, not a script bug.
-    console.error(`\nDeploy failed. ${(error as Error).message}`);
-    process.exitCode = 1;
-  }
+/** {@link deployWaves}, flattened: one order the Workers can deploy in, one at a time. */
+export function deployOrder(config: DeploymentConfig): WorkerId[] {
+  return deployWaves(config).flat();
 }

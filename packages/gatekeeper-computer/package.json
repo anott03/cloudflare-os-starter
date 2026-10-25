@@ -12,13 +12,13 @@
   },
   "dependencies": {
     "@cloudflare/computer": "0.3.1",
-    "@gadgets/workshop-shared": "workspace:*",
+    "@gadgets/workshop-shared": "link:../../cloudflare-os/packages/workshop-shared",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
     "isomorphic-git": "1.40.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@types/node": "26.1.0",
     "esbuild": "0.28.1",
     "playwright": "1.63.0",

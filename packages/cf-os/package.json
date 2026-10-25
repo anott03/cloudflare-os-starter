@@ -1,0 +1,48 @@
+{
+  "name": "cf-os",
+  "version": "0.1.2",
+  "description": "Scaffold, configure and deploy a self-hosted Cloudflare OS.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloudflare/cloudflare-os-starter.git",
+    "directory": "packages/cf-os"
+  },
+  "homepage": "https://github.com/cloudflare/cloudflare-os-starter/tree/main/packages/cf-os#readme",
+  "keywords": [
+    "cloudflare",
+    "cloudflare-os",
+    "workers",
+    "cli"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=24.19.0"
+  },
+  "bin": {
+    "cf-os": "./src/main.ts"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "bin": {
+      "cf-os": "./dist/main.js"
+    }
+  },
+  "scripts": {
+    "pack:build": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm run pack:build"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.8.1"
+  },
+  "devDependencies": {
+    "@gadgets/scripts": "link:../../cloudflare-os/scripts",
+    "@types/node": "26.1.0",
+    "cf": "1.0.0-beta.19",
+    "jsonc-parser": "^3.3.1",
+    "typescript": "catalog:"
+  }
+}

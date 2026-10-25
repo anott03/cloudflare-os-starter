@@ -2,7 +2,7 @@ import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import type {
   AccountDescription, ActionDescription, ActionField, ActionKind, AppUiContext, GatekeeperUiFrame, ApprovalQueue, Gatekeeper, GatekeeperConnectCallback,
-  GatekeeperConnectOptions, GatekeeperUser, GatekeeperUserVerifier, GitCache, GitPullHints,
+  GatekeeperConnectOptions, GatekeeperUser, GatekeeperUserVerifier, GitPullHints, GitPullTransfer,
   ResourceConfiguratorFrame, ResourceDescription, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { ComputerSession, FilePage, GitCheckout, Job, JobOutput, JobStatus, Sandbox, SandboxInfo, ScreenshotOptions, ScreenshotImage, StagedCheckout } from "./types.js";
@@ -12,6 +12,7 @@ import { PackStore, boundedInteger, cancelPack, commitId, MAX_FILE_BYTES, worksp
 import TYPES from "./types.txt";
 import MANAGER from "./generated/manager.txt";
 import { ComputerManagement } from "./management.js";
+import { packTransfer } from "./git-pull.js";
 export { ComputerAccountState } from "./account-state.js";
 
 const ICON = { url: "data:image/svg+xml," + encodeURIComponent(
@@ -367,7 +368,7 @@ export class ComputerGatekeeper extends DurableObject<Cloudflare.Env, AccountPro
     return result.commitId;
   }
 
-  async gitPull(oids: string[], cache: RpcStub<GitCache>, _hints: GitPullHints): Promise<void> {
+  async gitPull(oids: string[], _hints: GitPullHints): Promise<GitPullTransfer> {
     await this.checkAccess();
     const archives = new Set<string>();
     for (const oid of oids) {
@@ -375,7 +376,7 @@ export class ComputerGatekeeper extends DurableObject<Cloudflare.Env, AccountPro
       if (!archive) throw new Error("Git object was not exported by this connection.");
       archives.add(archive);
     }
-    for (const archive of archives) await cache.consumePack(this.#packs.get(archive));
+    return packTransfer([...archives].map(archive => () => this.#packs.get(archive)));
   }
 }
 

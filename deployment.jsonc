@@ -1,7 +1,7 @@
 {
   // Cloudflare account that owns every Worker and provisioned resource.
   // Find it: https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/
-  "accountId": "<CLOUDFLARE_ACCOUNT_ID>",
+  "accountId": "a034988a98c6b768d278663cf97ccb7d",
 
   // The deployment's public origin, used for PUBLIC_BASE_URL and to scope Context data.
   // null derives it from workers.router.route.customDomain.
@@ -16,35 +16,60 @@
     // Owns the public URL and serves the frontend. Proxies /api and /blueprint-screenshot to the
     // Workshop, and /gatekeeper/<name> to the matching Gatekeeper.
     "router": {
-      "name": "<ROUTER_WORKER_NAME>",
+      "name": "cloudflareos",
 
       // Production: use a hostname in an active Cloudflare zone. Wrangler creates DNS and TLS.
       // Evaluation: replace this with "route": { "workersDev": true } and set publicBaseUrl above.
       // https://developers.cloudflare.com/workers/configuration/routing/custom-domains/
-      "route": { "customDomain": "os.example.com" }
+      "route": { "customDomain": "os.amitav.dev" }
     },
 
     // The Workshop backend. No public route: the router reaches it over a service binding.
-    "workshop": { "name": "<WORKSHOP_WORKER_NAME>" },
-    "context": { "name": "<CONTEXT_WORKER_NAME>" },
+    "workshop": { "name": "cloudflareos-backend" },
+    "context": { "name": "cloudflareos-gk-context" },
 
     // The Scheduler Gatekeeper, which gives agents scheduled and recurring work. Ambient like
     // the Context Gatekeeper
-    "scheduler": { "name": "<SCHEDULER_WORKER_NAME>" },
+    "scheduler": { "name": "cloudflareos-gk-scheduler" },
 
-    "customGatekeeper": { "name": "<CUSTOM_GATEKEEPER_WORKER_NAME>" },
-    "errorReporter": { "name": "<ERROR_REPORTER_WORKER_NAME>" }
+    // The Web Search Gatekeeper, which lets agents search the public web. Ambient too. It searches
+    // through aiGateway.name below when that gateway is in this account, and through the account's
+    // "default" gateway when aiGateway is disabled or in another account. Searches are billed
+    // separately from models: load AI Gateway credits on the account, or store a Ceramic key
+    // (alias "default") on the gateway it actually searches through, or every search fails.
+    // See docs/customization.md#workers-and-routing.
+    "websearch": { "name": "cloudflareos-gk-websearch" },
+
+    "customGatekeeper": { "name": "cloudflareos-gk-custom" },
+    "errorReporter": { "name": "cloudflareos-errors" }
   },
+
+  // Optional upstream Gatekeepers (GitHub, Slack, ...), keyed by slug, each its own Worker:
+  //   "github": { "name": "<router-name>-gk-github" }
+  // `pnpm cf-os init` offers them; `pnpm cf-os secrets` sets their OAuth credentials.
+  // Reference: docs/customization.md#optional-gatekeepers
+  "gatekeepers": {
+    "google": { "name": "cloudflareos-gk-google" }
+  },
+
+  // Gatekeepers deployed outside this repository, bound into the Workshop and the router.
+  "extraGatekeepers": [
+    { "binding": "GATEKEEPER_GITHUB", "service": "gatekeeper-github" },
+    { "binding": "GATEKEEPER_CLOUDFLARE", "service": "gatekeeper-cloudflare" },
+    { "binding": "GATEKEEPER_COMPUTER", "service": "gatekeeper-computer" }
+  ],
 
   // This starter deploys Cloudflare Access mode. Cloudflare OS also supports built-in password
   // accounts and auth Gatekeeper sign-in; see the reference below before switching. The audience
-  // comes from the self-hosted Access application protecting the public hostname.
+  // comes from the self-hosted Access application protecting the public hostname: `pnpm cf-os init`
+  // sets it all up, or set "admins" and `pnpm cf-os access` finds or creates that application and
+  // fills in issuer and audience.
   // "admins" gates /admin in every sign-in method.
   // Reference: docs/customization.md#sign-in-methods
   "access": {
-    "issuer": "https://<TEAM_NAME>.cloudflareaccess.com",
-    "audience": "<ACCESS_AUDIENCE>",
-    "admins": ["<ADMIN_EMAIL>"]
+    "issuer": "https://tight-sea-8b0b.cloudflareaccess.com",
+    "audience": "1b6ed034095861dcd384bbbad2f1c01d639d793de4c62434e4a7a73449b7e295",
+    "admins": ["amitavn@pm.me"]
   },
 
   // Model catalog served through Cloudflare AI Gateway. Enabled by default: the Workshop reaches
@@ -57,7 +82,7 @@
     // Your account's AI Gateway. "default" is the one Cloudflare creates for the account.
     // Migrating from the hosted deploy? Use the gateway that flow created: "<instance>-ai"
     // (e.g. "cloudflareos-ai"), named after your instance. See docs/migrate-from-hosted.md.
-    "name": "default",
+    "name": "cloudflareos-ai",
 
     // null reuses the top-level accountId. Set only if the gateway lives in another account --
     // that requires CF_AI_GATEWAY_API_TOKEN, since the binding cannot reach across accounts.
@@ -65,7 +90,7 @@
 
     // "cloudflare" is Workers AI, which needs no key of your own. anthropic/openai need keys
     // stored on the gateway; "google" additionally requires CF_AI_GATEWAY_API_TOKEN.
-    "providers": ["cloudflare"]
+    "providers": ["cloudflare", "openai", "anthropic"]
   },
 
   "context": {
@@ -75,7 +100,7 @@
 
     // null: Wrangler provisions and remembers a KV namespace on first deploy.
     // string: bind an existing namespace by ID.
-    "kvNamespaceId": null
+    "kvNamespaceId": "387579ed20cb423288e548cf2e0f3e18"
 
     // Optional Git-compatible storage for Context collections. To enable it, add a comma after
     // kvNamespaceId and uncomment this object. Requires Artifacts account access.
@@ -86,11 +111,12 @@
     // }
   },
 
-  // Displayed to agents when the example custom integration is enabled in /admin.
+  // Displayed to agents when the example custom integration is enabled in /admin. false deploys none.
   // Reference: docs/customization.md#custom-gatekeepers
   "customGatekeeper": {
-    "name": "<ORGANIZATION_DISPLAY_NAME>",
-    "message": "<ORGANIZATION_GUIDANCE>"
+    "enabled": true,
+    "name": "Custom Gatekeeper",
+    "message": "An example integration owned by this deployment. Edit customGatekeeper.name and customGatekeeper.message in deployment.jsonc, or replace the package."
   },
 
   // Explicit backend issue reports go to a private Worker that emits structured console errors.
@@ -105,9 +131,9 @@
   // null values use Wrangler automatic provisioning. Set IDs/names to reuse owned resources.
   // https://developers.cloudflare.com/workers/wrangler/configuration/#automatic-provisioning
   "resources": {
-    "blueprintsKvNamespaceId": null,
-    "avatarsKvNamespaceId": null,
-    "blueprintContentBucket": null
+    "blueprintsKvNamespaceId": "6869434f2ae243188287c5c19ba22f40",
+    "avatarsKvNamespaceId": "80e9b133cd08402a9f3a8b396a53748b",
+    "blueprintContentBucket": "cloudflareos-blueprint-content"
   },
 
   // Structured custom logs stay enabled. Invocation logs and traces are separate volume controls.

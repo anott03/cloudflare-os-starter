@@ -1,17 +1,18 @@
-// The two shapes `deploy.ts` sits between: `deployment.jsonc` on the way in, and the
-// `wrangler.prod.jsonc` files it generates on the way out.
+// The two shapes a deploy sits between: `deployment.jsonc` on the way in, and the
+// `wrangler.prod.jsonc` files `generateConfigs` (deployment.ts) produces on the way out. The one
+// module typing the deployment file, so a later move to another config format is a translation.
 //
 // The wrangler side reuses the submodule's own declarations rather than redeclaring them, so a
-// base-config change upstream surfaces here as a type error during `pnpm types:scripts` instead of
+// base-config change upstream surfaces here as a type error during the `cf-os` type-check instead of
 // as a silently dropped key at deploy time. The imports are type-only, which under
 // `verbatimModuleSyntax` erase completely -- `node` never resolves them, so the submodule's
-// runtime dependencies are not this script's problem.
+// runtime dependencies are not this module's problem.
 
 import type {
   BindingDecl,
   ObservabilityConfig,
   WranglerConfig,
-} from "../cloudflare-os/scripts/release/manifest-lib.ts";
+} from "@gadgets/scripts/release/manifest-lib";
 
 /** A model provider the Workshop can serve through AI Gateway with deployment-managed keys. */
 export type AiGatewayProvider = "anthropic" | "openai" | "google" | "cloudflare";
@@ -48,7 +49,7 @@ export interface AccessConfig {
  * `WORKERS_AI` binding, which is pre-authenticated inside the Worker's own account. Only a gateway
  * in a *different* account, or the `google` provider, needs `CF_AI_GATEWAY_API_TOKEN` -- see
  * `AiGatewayConfig` in cloudflare-os/packages/workshop-backend/src/ai-gateway.ts, whose constructor
- * throws this script mirrors.
+ * throws `validateConfig` mirrors.
  */
 export interface AiGatewayConfigInput {
   /** Whether the Workshop advertises a deployment-managed catalog at all. */
@@ -128,15 +129,31 @@ export interface DeploymentConfig {
     workshop: { name: string };
     context: { name: string };
     scheduler: { name: string };
-    customGatekeeper: { name: string };
+    /**
+     * The Web Search Gatekeeper. Ambient, like Context and Scheduler, and preinstalled by the hosted
+     * flow. Searches through `aiGateway`'s gateway; through the account's `default` one when that is
+     * disabled or in another account.
+     */
+    websearch: { name: string };
+    /** Only required when `customGatekeeper.enabled` is not false. */
+    customGatekeeper?: { name: string };
     /** Only required when `errorReporting.enabled`. */
     errorReporter?: { name: string };
   };
+  /**
+   * Optional upstream Gatekeepers, keyed by the hosted deploy's install slug (`github`,
+   * `mcpportal`). Absent means none. Each one is offered by the catalog `gatekeeper-catalog.ts`
+   * reads from the submodule, and `validateGatekeepers` checks the entries against it.
+   */
+  gatekeepers?: Record<string, GatekeeperEntry>;
   access: AccessConfig;
   aiGateway: AiGatewayConfigInput;
   context: ContextConfig;
-  /** Display text the example custom Gatekeeper serves to agents. */
-  customGatekeeper: { name: string; message: string };
+  /**
+   * The example custom Gatekeeper: whether it is deployed (absent means it is), and the display
+   * text it serves to agents, which only matters when it is.
+   */
+  customGatekeeper: { enabled?: boolean; name: string; message: string };
   /** Gatekeepers deployed outside this script but bound into the deployment. Optional. */
   extraGatekeepers?: ExtraGatekeeper[];
   /** Private explicit-issue destination. */
@@ -150,9 +167,20 @@ export interface DeploymentConfig {
   observability: DeploymentObservabilityConfig;
 }
 
+/** One optional Gatekeeper in `deployment.jsonc`'s `gatekeepers` block. */
+export interface GatekeeperEntry {
+  /** Its Worker name. A permanent service identity, like every name in `workers`. */
+  name: string;
+  /**
+   * Plain-text vars merged over its base config's. Never `BASE_URL`, which the deploy sets, and
+   * never a secret: those go to the Worker with `wrangler secret put`.
+   */
+  vars?: Record<string, string>;
+}
+
 /**
  * `ObservabilityConfig` plus the traces block. Upstream's type does not declare it, though the
- * backend's own `wrangler.jsonc` sets it and this script writes it for every Worker.
+ * backend's own `wrangler.jsonc` sets it and `generateConfigs` writes it for every Worker.
  */
 export interface ProdObservabilityConfig extends ObservabilityConfig {
   traces?: { enabled?: boolean; head_sampling_rate?: number };
@@ -160,7 +188,7 @@ export interface ProdObservabilityConfig extends ObservabilityConfig {
 
 /**
  * A generated `wrangler.prod.jsonc`: the subset of wrangler config upstream's `WranglerConfig`
- * declares, plus the keys this script writes that it does not.
+ * declares, plus the keys `generateConfigs` writes that it does not.
  *
  * Four keys are replaced rather than added to. Upstream's observability type is deliberately closed
  * and has no `traces`; its `artifacts` is a single `BindingDecl`, while wrangler takes an array and
@@ -168,7 +196,7 @@ export interface ProdObservabilityConfig extends ObservabilityConfig {
  * `BindingDecl`s, because the release manifest replaces every id with a placeholder while a
  * generated config either names the resource or leaves it for automatic provisioning.
  *
- * `assets` is *not* redeclared -- upstream's is already the shape written here.
+ * `assets` and `ai` are *not* redeclared -- upstream's are already the shapes written here.
  */
 export type ProdWranglerConfig =
   Omit<WranglerConfig, "observability" | "artifacts" | "kv_namespaces" | "r2_buckets">
@@ -186,8 +214,6 @@ export type ProdWranglerConfig =
     /** Turned off on every Worker: a preview URL is an unauthenticated path around Access. */
     preview_urls?: boolean;
     observability?: ProdObservabilityConfig;
-    /** Workers AI. Both the AI Gateway transport and what webFetch's `toMarkdown()` runs on. */
-    ai?: BindingDecl;
     /** Secrets wrangler refuses to deploy without. Emitted only when one is genuinely needed. */
     secrets?: { required: string[] };
     /** Artifacts namespaces. An array, unlike upstream's single-binding declaration. */
@@ -200,9 +226,13 @@ export interface GeneratedConfigs {
   workshop: ProdWranglerConfig;
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
-  customGatekeeper: ProdWranglerConfig;
+  websearch: ProdWranglerConfig;
+  /** Absent when `customGatekeeper.enabled` is false. */
+  customGatekeeper?: ProdWranglerConfig;
   /** Absent when `errorReporting.enabled` is false. */
   errorReporter?: ProdWranglerConfig;
+  /** One per `gatekeepers` entry, by slug. */
+  gatekeepers: Record<string, ProdWranglerConfig>;
 }
 
 /** The upstream base configs the generated ones are derived from. */
@@ -211,11 +241,12 @@ export interface BaseConfigs {
   workshop: ProdWranglerConfig;
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
+  websearch: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
   errorReporter: ProdWranglerConfig;
 }
 
-/** One build step `deploy.ts` runs before deploying. See `buildCommands`. */
+/** One build step a check or deploy runs before deploying. See `buildCommands`. */
 export interface BuildCommand {
   /** Arguments passed to `pnpm`, from the repository root. */
   args: string[];

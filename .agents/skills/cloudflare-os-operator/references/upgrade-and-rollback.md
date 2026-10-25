@@ -12,6 +12,8 @@ Never advance the `cloudflare-os` submodule to a moving branch or an assumed lat
 4. Keep the parent and submodule worktrees clean except for the intentional gitlink/wrapper compatibility changes.
 5. Retain the old gitlink, configs, Worker deployment IDs, resource identities, and compatibility notes.
 
+`npx cf-os@latest update --upstream` selects upstream `main`'s exact SHA as the target, checks it out and stages it without committing. In a starter project it first merges the starter's `main`, committed, as a plain `update` does, and stages the pin on top: run plain `npx cf-os@latest update` and commit it first to keep the `--upstream` change a gitlink-only review. The selection is step 2's only: the rest of this gate, and the compatibility review below, still apply before the pin is committed. The brief it writes (`.cf-os/update.md`) records the old and new SHAs and the commit range for steps 1 and 3. [updating.md](updating.md) lists what an upstream range usually needs in this repository.
+
 If using a mirror, prove the exact commit exists without changing the active checkout first. Use a temporary clone or fetch the exact full SHA from the approved mirror where supported, inspect the commit object, and compare it to the intended source. Do not alter `.gitmodules` or check out a nearby branch head as a test.
 
 ## Compatibility Review
@@ -21,21 +23,21 @@ Audit the old-to-new change for:
 - Authentication and authorization behavior.
 - Shared RPC APIs and Gatekeeper contracts.
 - Durable Object classes, migration tags, and storage schemas.
-- Workshop, Context, and Gatekeeper Wrangler base configs.
+- Workshop, Router, and Gatekeeper Wrangler base configs, including any Gatekeeper newly added to upstream's `PREINSTALL` (`cloudflare-os/scripts/release/manifest-lib.ts`). A new one arrives as optional unless the catalog excludes it; see `references/updating.md`. Either way, report it.
 - Required vars, secrets, service bindings, KV, R2, assets, compatibility flags, and migrations.
 - AI transport, providers, billing, and logging.
 - Error reporting and frontend reporting.
 - Dependencies, lockfiles, build commands, and generated artifacts.
-- The submodule's `pnpm-workspace.yaml` `catalog:` block, and its build scripts vs Vite+ tasks.
+- The submodule's `capnweb`, `typescript` and `@cloudflare/workers-types` catalog versions, and its build scripts vs Vite+ tasks.
 
-Inspect every base-config section that `scripts/deploy.ts` replaces or reconstructs. New upstream fields can otherwise be silently dropped. Generate and review sanitized old/new derived-config diffs, but never commit or hand-edit generated Wrangler files.
+Inspect every base-config section that `generateConfigs()` (`packages/cf-os/src/core/deployment.ts`) replaces or reconstructs. New upstream fields can otherwise be silently dropped. Generate and review sanitized old/new derived-config diffs, but never commit or hand-edit generated Wrangler files.
 
 Two of those deserve their own step, because both fail quietly:
 
-- **Catalog drift.** `cloudflare-os/packages/workshop-shared` and `.../error-reporting` are members of the *starter's* workspace, so their `catalog:` specifiers resolve against the starter's `pnpm-workspace.yaml`, not the submodule's. A missing entry fails `pnpm install` loudly. A stale one does not: it resolves a second copy of `capnweb`, and a stub minted by one copy is unserialisable by the other's session. A deduped dev machine hides that; the two separate installs in CI do not. Re-sync the catalog with the submodule's as part of the gitlink change.
-- **Build scripts becoming Vite+ tasks.** `scripts/deploy.ts` reaches every build through `vp run --no-cache <task>`, which runs scripts and tasks alike, because `pnpm --filter` cannot see a task. If an upstream package converts its `build` script to a task, or its `build` script starts spawning a nested cached `vp run` of its own, check that `buildCommands()` still rebuilds from source rather than replaying an archived artifact. `scripts/deploy.test.ts` asserts the flag but cannot see a nested invocation.
+- **Types across the `link:` boundary.** The starter's packages depend on the submodule's (`@gadgets/workshop-shared`, `@gadgets/error-reporting`, `@gadgets/scripts`) through `link:`, not as workspace members. So the submodule's dependencies come from its own lockfile, and the starter's catalog does not govern them. Only the versions whose types cross the link have to agree: `capnweb`, `typescript` and `@cloudflare/workers-types`. A differing `capnweb` resolves a second copy, and a stub minted by one copy is unserialisable by the other's session. A deduped dev machine hides that, while the two separate installs in CI do not. Compare those three with `cloudflare-os/pnpm-workspace.yaml` as part of the gitlink change.
+- **Build scripts becoming Vite+ tasks.** `buildCommands()` (`packages/cf-os/src/core/deployment.ts`) reaches every build through `vp run --no-cache <task>`, which runs scripts and tasks alike, because `pnpm --filter` cannot see a task. If an upstream package converts its `build` script to a task, or its `build` script starts spawning a nested cached `vp run` of its own, check that `buildCommands()` still rebuilds from source rather than replaying an archived artifact. `packages/cf-os/src/core/deployment.test.ts` asserts the flag but cannot see a nested invocation.
 
-Update only the gitlink unless a specific reviewed wrapper compatibility change is required. Install both workspaces and run `pnpm lint`, `pnpm check`, plus the relevant upstream tests and type checks.
+Update only the gitlink unless a specific reviewed wrapper compatibility change is required. Run `pnpm install`. Its `postinstall` (`cf-os install`) reinstalls `cloudflare-os/` from the submodule's lockfile (frozen), and `optimisticRepeatInstall: false` makes it run even though the starter's own lockfile is unchanged. Then run `pnpm lint`, `pnpm cf-os check`, plus the relevant upstream tests and type checks. Every build, test and deploy entry point runs `cf-os install --check` first, so a skipped hook stops them with the fix rather than a missing-module error.
 
 ## Migration Plan
 
