@@ -243,6 +243,8 @@ Use `extraGatekeepers` for Workers deployed separately from this wrapper:
 ]
 ```
 
+`packages/gatekeeper-chatgpt` is one such Worker: bound as `GATEKEEPER_CHATGPT`, it lets models of the `chatgpt` provider run on a user's ChatGPT subscription. See its [README](../packages/gatekeeper-chatgpt/README.md).
+
 Each entry adds a `GatekeeperVendor` RPC binding to the Workshop and an HTTP binding to the Router. The suffix selects the public path, lowercased with underscores replaced by hyphens. `GATEKEEPER_GITHUB` becomes `/gatekeeper/github`.
 
 Binding names must match `GATEKEEPER_[A-Z0-9_]+`. Built-in names, selected optional Gatekeeper bindings, duplicate bindings and service names owned by the wrapper are rejected. Preserve an existing Worker's name to retain its Durable Object data and connections.

@@ -56,7 +56,8 @@
   "extraGatekeepers": [
     { "binding": "GATEKEEPER_GITHUB", "service": "gatekeeper-github" },
     { "binding": "GATEKEEPER_CLOUDFLARE", "service": "gatekeeper-cloudflare" },
-    { "binding": "GATEKEEPER_COMPUTER", "service": "gatekeeper-computer" }
+    { "binding": "GATEKEEPER_COMPUTER", "service": "gatekeeper-computer" },
+    { "binding": "GATEKEEPER_CHATGPT", "service": "gatekeeper-chatgpt" }
   ],
 
   // This starter deploys Cloudflare Access mode. Cloudflare OS also supports built-in password

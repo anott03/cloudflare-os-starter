@@ -1,0 +1,23 @@
+{
+  "name": "gatekeeper-chatgpt",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "build:worker": "capnweb-validate build --out .wrangler/validate",
+    "types:generate": "node generate-types.ts"
+  },
+  "dependencies": {
+    "@gadgets/workshop-shared": "link:../../cloudflare-os/packages/workshop-shared",
+    "capnweb": "catalog:",
+    "capnweb-validate": "catalog:",
+    "@gadgets/gatekeeper-kit": "link:../../cloudflare-os/packages/gatekeeper-kit",
+    "zod": "4.6.5",
+    "jose": "^6.2.12"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

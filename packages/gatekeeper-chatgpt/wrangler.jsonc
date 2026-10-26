@@ -1,0 +1,22 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "gatekeeper-chatgpt",
+  "main": ".wrangler/validate/src/index.ts",
+  "build": {
+    "command": "pnpm run build:worker",
+    "watch_dir": "src"
+  },
+  "compatibility_date": "2026-09-04",
+  "compatibility_flags": ["nodejs_compat", "allow_irrevocable_stub_storage"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChatGptAccount"] }],
+  "vars": {
+    "BASE_URL": "https://os.amitav.dev/gatekeeper/chatgpt"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false }
+  }
+}
